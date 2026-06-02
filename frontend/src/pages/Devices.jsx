@@ -15,6 +15,7 @@ import { Plus, Pencil, Trash2, Database, Eraser, Search, Download, LineChart as 
 import { toast } from "sonner";
 
 const TYPES = ["switch", "plc", "hmi", "sensor"];
+const ZONES = ["Cell-A", "Cell-B", "Utilities"];
 
 const empty = {
   name: "",
@@ -23,6 +24,7 @@ const empty = {
   model: "",
   protocol: "",
   device_type: "switch",
+  zone: "",
 };
 
 const DeviceModal = ({ open, onClose, initial, onSubmit }) => {
@@ -73,6 +75,30 @@ const DeviceModal = ({ open, onClose, initial, onSubmit }) => {
               ))}
             </div>
           </div>
+          <div>
+            <div className="nv-label mb-1">Zone</div>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => set("zone", "")}
+                className={`nv-btn ${!form.zone ? "nv-btn-primary" : ""}`}
+                data-testid="device-form-zone-none"
+              >
+                NONE
+              </button>
+              {ZONES.map((z) => (
+                <button
+                  type="button"
+                  key={z}
+                  onClick={() => set("zone", z)}
+                  className={`nv-btn ${form.zone === z ? "nv-btn-primary" : ""}`}
+                  data-testid={`device-form-zone-${z}`}
+                >
+                  {z.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
         <div className="px-4 py-3 border-t border-nv-border flex justify-end gap-2">
           <button className="nv-btn" onClick={onClose} data-testid="device-form-cancel">Cancel</button>
@@ -100,6 +126,7 @@ export default function Devices() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [zoneFilter, setZoneFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [chartDevice, setChartDevice] = useState(null);
 
@@ -147,6 +174,7 @@ export default function Devices() {
     const rows = filtered.map((d) => ({
       name: d.name,
       type: d.device_type,
+      zone: d.zone || "",
       ip: d.ip,
       vendor: d.vendor,
       model: d.model,
@@ -246,6 +274,7 @@ export default function Devices() {
               <th>Status</th>
               <th>Name</th>
               <th>Type</th>
+              <th>Zone</th>
               <th>IP Address</th>
               <th>Vendor / Model</th>
               <th>Protocol</th>
@@ -262,6 +291,7 @@ export default function Devices() {
                 </td>
                 <td className="font-mono text-nv-text">{d.name}</td>
                 <td className="uppercase text-[11px] tracking-wider text-nv-muted">{d.device_type}</td>
+                <td className="font-mono text-[11px] text-[#16c79a]">{d.zone || "—"}</td>
                 <td className="font-mono text-[#16c79a]">{d.ip}</td>
                 <td className="text-[12px]">{d.vendor} <span className="text-nv-muted">/ {d.model}</span></td>
                 <td className="font-mono text-[11px] text-nv-muted">{d.protocol}</td>
@@ -298,7 +328,7 @@ export default function Devices() {
               </tr>
             ))}
             {filtered.length === 0 && !isLoading && (
-              <tr><td colSpan={9} className="text-center py-10 text-nv-muted font-mono text-[12px]">NO DEVICES</td></tr>
+              <tr><td colSpan={10} className="text-center py-10 text-nv-muted font-mono text-[12px]">NO DEVICES</td></tr>
             )}
           </tbody>
         </table>

@@ -1,0 +1,46 @@
+{
+  "summary": "Iteration 3 — validated 3 new features. Backend: 6/6 pytest tests passed (metrics 404 on unknown id, /api/zones structure & 20-device total, /api/topology compound zone parents with parent=zone-<name>, device zone CRUD+PATCH, alert debounce 60s window). Frontend Topology page fully working — zones sidebar, per-zone toggle, EXPAND ALL / COLLAPSE ALL, chevron flip, compound dashed-bordered zone parents visible in canvas (CELL-A/CELL-B/UTILITIES). Frontend Devices: Zone column present, Add-Device modal zone selectors (None/Cell-A/Cell-B/Utilities) work and creation persists with zone. BUG: zone filter chip row on /devices page is MISSING — declared `zoneFilter` state in Devices.jsx is unused; no `device-zone-filter-*` elements rendered.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Devices.jsx (/devices page)",
+        "issue": "Zone filter row is missing. Spec requires data-testid device-zone-filter-all, device-zone-filter-Cell-A, device-zone-filter-Cell-B, device-zone-filter-Utilities to filter the table by zone. None of these elements are rendered. The `zoneFilter` state is declared but never used; the filter useMemo does NOT apply zone filtering.",
+        "selector": "[data-testid=\"device-zone-filter-all\"] (and per-zone variants)",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_netvision_iter3.py",
+    "/app/test_reports/pytest/pytest_iter3.xml"
+  ],
+  "action_items": [
+    "Add zone filter chip row above the devices table in /app/frontend/src/pages/Devices.jsx, with data-testid=\"device-zone-filter-all\" plus one chip per zone (device-zone-filter-Cell-A, device-zone-filter-Cell-B, device-zone-filter-Utilities). Wire `zoneFilter` state into the existing `filtered` useMemo: `.filter((d) => zoneFilter === 'all' || d.zone === zoneFilter)`.",
+    "Consider rendering an explicit 'NONE/—' filter chip for devices without a zone (optional; depends on product intent)."
+  ],
+  "critical_code_review_comments": [
+    "Devices.jsx line ~129: `const [zoneFilter, setZoneFilter] = useState('all')` is dead state — declared but neither read nor exposed in any UI. Implementation gap, not a runtime bug.",
+    "Backend _create_alert debounce check uses ISO-string timestamp comparison via `$gte` — works because Alert timestamps are UTC ISO format with consistent precision, but a BSON datetime field would be safer long-term.",
+    "Topology.jsx applies collapse via cy.style('display','none') on child nodes only — leaves zone compound parent visible (correct per spec). Layout re-runs on every toggle which can be expensive for large graphs (>200 nodes); not an issue at current scale of 20.",
+    "ZONES constant duplicated in backend server.py (line 138) and frontend Devices.jsx (line 18) — minor DRY violation; consider exposing via /api/zones or a constants endpoint.",
+    "/api/topology response: device nodes carry `parent` field only when device has a zone — devices without zone are orphan top-level nodes; this is correct behavior but Topology.jsx doesn't explicitly handle this case (will still render fine)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_netvision_iter3.py",
+    "/app/test_reports/pytest/pytest_iter3.xml",
+    "/app/test_reports/iteration_3.json"
+  ],
+  "success_rate": {"backend": "100% (6/6 passed)", "frontend": "Topology 100%, Devices ~80% (zone filter row missing)"},
+  "test_credentials": "N/A — app has no auth",
+  "seed_data_creation": "Tests POST /api/mock/generate?replace=true to ensure a fresh 20-device topology with 3 zones. Test device TEST_UI_DEV1 created via UI then deleted via API.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend test_netvision_iter3.py is the regression suite for iter3. Run with REACT_APP_BACKEND_URL set; it auto-uses the public URL from frontend/.env. The alert-debounce test sleeps 8s after mock/generate then checks that no two unacked alerts for the same (device_id, severity) have timestamps <60s apart. Topology UI uses lucide chevron-right (collapsed) / chevron-down (expanded) — assert via inner_html match. The cytoscape display:none style hides nodes but they remain in cy.json — counting visible nodes requires reading cy element style, not the DOM.",
+  "rca of the issue": "Devices.jsx was partially implemented for the zone filter feature: `zoneFilter` state was added (line ~129) but the UI render block for the chip row and the corresponding `.filter((d) => zoneFilter === 'all' || d.zone === zoneFilter)` clause inside the `filtered` useMemo were never added. The current useMemo only filters by `device_type` and search. Fix: render a chip row similar to the existing TYPES chips, mapping over ['all', 'Cell-A', 'Cell-B', 'Utilities'] with onClick setZoneFilter and matching data-testid `device-zone-filter-<value>`; add the zone clause to the filter pipeline."
+}

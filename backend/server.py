@@ -44,6 +44,7 @@ class DeviceBase(BaseModel):
     model: str
     protocol: str
     device_type: DeviceType
+    zone: Optional[str] = None
 
 
 class DeviceCreate(DeviceBase):
@@ -57,6 +58,7 @@ class DeviceUpdate(BaseModel):
     model: Optional[str] = None
     protocol: Optional[str] = None
     device_type: Optional[DeviceType] = None
+    zone: Optional[str] = None
 
 
 class Device(DeviceBase):
@@ -109,7 +111,7 @@ def _gen_ip(base="10.20"):
     return f"{base}.{random.randint(1, 50)}.{random.randint(2, 254)}"
 
 
-def _new_device(device_type: DeviceType, idx: int, parent_id: Optional[str] = None) -> Device:
+def _new_device(device_type: DeviceType, idx: int, parent_id: Optional[str] = None, zone: Optional[str] = None) -> Device:
     vendor, model = random.choice(VENDORS[device_type])
     protocol = random.choice(PROTOCOLS[device_type])
     name = f"{NAME_PREFIXES[device_type]}-{idx:02d}"
@@ -129,35 +131,34 @@ def _new_device(device_type: DeviceType, idx: int, parent_id: Optional[str] = No
         uptime_pct=round(random.uniform(90.0, 100.0), 2),
         cpu_pct=round(random.uniform(5.0, 85.0), 1),
         parent_id=parent_id,
+        zone=zone,
     )
 
 
+ZONES = ["Cell-A", "Cell-B", "Utilities"]
+
+
 def _build_topology() -> List[Device]:
-    """Build a realistic hierarchy: 3 core switches -> PLCs/HMIs -> sensors."""
+    """Build a realistic hierarchy: 3 core switches (each = 1 zone) -> PLCs/HMIs -> sensors."""
     devices: List[Device] = []
-    # Core switches
-    switches = [_new_device("switch", i + 1) for i in range(3)]
+    switches = [_new_device("switch", i + 1, zone=ZONES[i]) for i in range(3)]
     devices.extend(switches)
 
-    # PLCs (5) and HMIs (3) attached to switches
-    plc_count = 5
-    hmi_count = 3
     plcs: List[Device] = []
-    for i in range(plc_count):
+    for i in range(5):
         parent = switches[i % len(switches)]
-        plc = _new_device("plc", i + 1, parent_id=parent.id)
+        plc = _new_device("plc", i + 1, parent_id=parent.id, zone=parent.zone)
         plcs.append(plc)
         devices.append(plc)
 
-    for i in range(hmi_count):
+    for i in range(3):
         parent = switches[i % len(switches)]
-        hmi = _new_device("hmi", i + 1, parent_id=parent.id)
+        hmi = _new_device("hmi", i + 1, parent_id=parent.id, zone=parent.zone)
         devices.append(hmi)
 
-    # Sensors (9) attached to PLCs
     for i in range(9):
         parent = plcs[i % len(plcs)]
-        sensor = _new_device("sensor", i + 1, parent_id=parent.id)
+        sensor = _new_device("sensor", i + 1, parent_id=parent.id, zone=parent.zone)
         devices.append(sensor)
 
     return devices  # total 20
@@ -170,7 +171,19 @@ def _serialize(doc: dict) -> dict:
     return doc
 
 
-async def _create_alert(device: dict, severity: AlertSeverity, message: str):
+ALERT_DEBOUNCE_SEC = 60
+
+
+async def _create_alert(device: dict, severity: AlertSeverity, message: str, force: bool = False):
+    """Insert alert unless a same-device-same-severity alert exists in the last ALERT_DEBOUNCE_SEC."""
+    if not force:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ALERT_DEBOUNCE_SEC)).isoformat()
+        recent = await db.alerts.find_one(
+            {"device_id": device["id"], "severity": severity, "timestamp": {"$gte": cutoff}},
+            {"_id": 0, "id": 1},
+        )
+        if recent:
+            return None
     alert = Alert(
         device_id=device["id"],
         device_name=device["name"],
@@ -277,27 +290,55 @@ async def delete_alert(alert_id: str):
 @api_router.get("/topology")
 async def topology():
     devices = await db.devices.find({}, {"_id": 0}).to_list(1000)
-    nodes = [
-        {
-            "data": {
-                "id": d["id"],
-                "label": d["name"],
-                "type": d["device_type"],
-                "status": d["status"],
-                "ip": d["ip"],
-                "vendor": d["vendor"],
-                "model": d["model"],
-                "protocol": d["protocol"],
-            }
-        }
-        for d in devices
+    # zone compound parents
+    zones = sorted({d["zone"] for d in devices if d.get("zone")})
+    zone_nodes = [
+        {"data": {"id": f"zone-{z}", "label": z, "is_zone": True}}
+        for z in zones
     ]
+    nodes = []
+    for d in devices:
+        data = {
+            "id": d["id"],
+            "label": d["name"],
+            "type": d["device_type"],
+            "status": d["status"],
+            "ip": d["ip"],
+            "vendor": d["vendor"],
+            "model": d["model"],
+            "protocol": d["protocol"],
+            "zone": d.get("zone"),
+        }
+        if d.get("zone"):
+            data["parent"] = f"zone-{d['zone']}"
+        nodes.append({"data": data})
+
     edges = [
         {"data": {"id": f"e-{d['id']}", "source": d["parent_id"], "target": d["id"]}}
         for d in devices
         if d.get("parent_id")
     ]
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": zone_nodes + nodes, "edges": edges, "zones": zones}
+
+
+# Zones list
+@api_router.get("/zones")
+async def list_zones():
+    devices = await db.devices.find({}, {"_id": 0, "zone": 1, "status": 1}).to_list(1000)
+    counts: dict[str, dict] = {}
+    for d in devices:
+        z = d.get("zone")
+        if not z:
+            continue
+        c = counts.setdefault(z, {"name": z, "total": 0, "online": 0, "warning": 0, "critical": 0})
+        c["total"] += 1
+        if d["status"] == "online":
+            c["online"] += 1
+        elif d["status"] == "warning":
+            c["warning"] += 1
+        else:
+            c["critical"] += 1
+    return sorted(counts.values(), key=lambda x: x["name"])
 
 
 # Dashboard summary
@@ -370,6 +411,9 @@ async def reset_all():
 # Device metric history (last N hours, default 24h)
 @api_router.get("/devices/{device_id}/metrics")
 async def device_metrics(device_id: str, hours: int = 24):
+    exists = await db.devices.find_one({"id": device_id}, {"_id": 0, "id": 1})
+    if not exists:
+        raise HTTPException(404, "Device not found")
     hours = max(1, min(hours, 168))
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     cursor = db.device_metrics.find(

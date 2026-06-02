@@ -30,17 +30,23 @@ export const useLiveData = () => {
           if (msg.summary) qc.setQueryData(["summary"], msg.summary);
           if (msg.devices) {
             qc.setQueryData(["devices"], msg.devices);
-            // derive topology from device list
-            const nodes = msg.devices.map((d) => ({
+            // derive topology from device list, with zone compound parents
+            const zones = [...new Set(msg.devices.map((d) => d.zone).filter(Boolean))].sort();
+            const zoneNodes = zones.map((z) => ({
+              data: { id: `zone-${z}`, label: z, is_zone: true },
+            }));
+            const deviceNodes = msg.devices.map((d) => ({
               data: {
                 id: d.id, label: d.name, type: d.device_type, status: d.status,
                 ip: d.ip, vendor: d.vendor, model: d.model, protocol: d.protocol,
+                zone: d.zone || null,
+                ...(d.zone ? { parent: `zone-${d.zone}` } : {}),
               },
             }));
             const edges = msg.devices
               .filter((d) => d.parent_id)
               .map((d) => ({ data: { id: `e-${d.id}`, source: d.parent_id, target: d.id } }));
-            qc.setQueryData(["topology"], { nodes, edges });
+            qc.setQueryData(["topology"], { nodes: [...zoneNodes, ...deviceNodes], edges, zones });
           }
           if (msg.alerts) qc.setQueryData(["alerts"], msg.alerts);
         } catch {

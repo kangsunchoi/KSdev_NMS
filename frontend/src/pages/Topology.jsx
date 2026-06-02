@@ -30,7 +30,6 @@ export default function Topology() {
   const { data, isLoading } = useQuery({
     queryKey: ["topology"],
     queryFn: fetchTopology,
-    refetchInterval: 5000,
   });
 
   const [selected, setSelected] = useState(null);

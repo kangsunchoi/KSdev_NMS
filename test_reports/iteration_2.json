@@ -1,0 +1,41 @@
+{
+  "summary": "Iteration 2 — validated 4 newly-added MVP features end-to-end: device metric history endpoint, bulk-acknowledge (selective + all), WebSocket push tick stream, and frontend search/CSV/chart-modal flows. 9/10 pytest backend tests passed (1 skipped: needs >60s sim runtime before first metric sample exists). All Playwright frontend flows passed for Devices and Alerts pages. WebSocket live updates confirmed: device latency value changed (11.35→11.45ms) within 13 seconds with NO polling — verified window.__nvWsOpen=true.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/devices/{id}/metrics", "issue": "Unknown device_id returns 200 with empty points array (not 404). Spec doesn't mandate 404; treated as design choice but consider validating device existence for cleaner contract."},
+      {"endpoint": "/api/alerts/bulk-acknowledge", "issue": "ids:[] (empty list) is falsy in implementation (if payload.ids:), so it ack's ALL open. Spec says 'with body {} or {ids:null} acks all'; empty list behavior is technically extra but harmless. Consider treating [] as 'ack nothing' for stricter semantics."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_netvision_iter2.py",
+    "/app/test_reports/pytest/pytest_iter2.xml"
+  ],
+  "action_items": [
+    "Optional: backend — return 404 on /api/devices/{id}/metrics when device id does not exist.",
+    "Optional: backend — distinguish empty list `ids:[]` (ack nothing) from absent/null ids (ack all) for stricter API contract.",
+    "Informational: first metric history sample only appears 60s after backend startup (TICK%12==0 cadence). Not a bug."
+  ],
+  "critical_code_review_comments": [
+    "WebSocket loop in /api/ws uses `await websocket.receive_text()` to keep alive — clients never send messages, so this blocks forever. Works because ws_manager.broadcast iterates clients independently; just a noteworthy pattern.",
+    "MetricChartModal still has refetchInterval: 30000 on the metrics useQuery — this is fine because metric history is not pushed via WS, but the problem statement says 'no polling fallback' should be removed; metric history polling is acceptable since WS payload doesn't include per-device history.",
+    "simulate_metrics_loop creates new warning alerts on every status flip — during testing, bulk-ack tests can race with newly-spawned alerts. Consider rate-limiting alert creation or de-duplicating warnings on the same device within a short window.",
+    "csv.js — escape() correctly handles commas/quotes/newlines; clean implementation.",
+    "useLiveData reconnect backoff capped at 8s — good. WebSocket URL derivation https→wss is correct."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_netvision_iter2.py"
+  ],
+  "success_rate": {"backend": "100% (9 passed, 1 skipped pending 60s sim)", "frontend": "100% on all 4 new feature flows"},
+  "test_credentials": "N/A — app has no auth",
+  "seed_data_creation": "Tests POST /api/mock/generate at session start to ensure a fresh 20-device topology and open alerts for bulk-ack tests.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "WebSocket URL = REACT_APP_BACKEND_URL with https→wss + /api/ws. Sim loop creates new warning/critical alerts continuously when status flips — tests that bulk-ack and verify counts must read counts immediately, not after a few seconds. For metric history points, wait 65s after a fresh container start before asserting non-empty points. window.__nvWsOpen flag on browser window confirms WS connected.",
+  "rca of the issue": "No defects found. Two initial Playwright test 'failures' were RCA'd as test artifacts: (1) inner_text() returns uppercased text due to CSS transform — assertion checked mixed-case substring; (2) bulk-ack-all left 9 open because simulation spawned 9 new warning alerts during the 1.5s wait between ack request and verify. Direct curl against /api/alerts/bulk-acknowledge confirmed acknowledged counts are correct."
+}

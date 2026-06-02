@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchDevices,
@@ -8,8 +8,10 @@ import {
   generateMock,
   resetAll,
 } from "../lib/api";
+import { exportCsv } from "../lib/csv";
 import { StatusDot } from "../components/StatusDot";
-import { Plus, Pencil, Trash2, Database, Eraser } from "lucide-react";
+import { MetricChartModal } from "../components/MetricChartModal";
+import { Plus, Pencil, Trash2, Database, Eraser, Search, Download, LineChart as LineIcon } from "lucide-react";
 import { toast } from "sonner";
 
 const TYPES = ["switch", "plc", "hmi", "sensor"];
@@ -93,12 +95,13 @@ export default function Devices() {
   const { data: devices = [], isLoading } = useQuery({
     queryKey: ["devices"],
     queryFn: fetchDevices,
-    refetchInterval: 5000,
   });
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [chartDevice, setChartDevice] = useState(null);
 
   const mCreate = useMutation({
     mutationFn: createDevice,
@@ -126,7 +129,39 @@ export default function Devices() {
     setEditing(null);
   };
 
-  const filtered = filter === "all" ? devices : devices.filter((d) => d.device_type === filter);
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return devices
+      .filter((d) => filter === "all" || d.device_type === filter)
+      .filter((d) =>
+        !q ||
+        d.name.toLowerCase().includes(q) ||
+        d.ip.toLowerCase().includes(q) ||
+        d.vendor.toLowerCase().includes(q) ||
+        d.model.toLowerCase().includes(q) ||
+        d.protocol.toLowerCase().includes(q)
+      );
+  }, [devices, filter, search]);
+
+  const handleExport = () => {
+    const rows = filtered.map((d) => ({
+      name: d.name,
+      type: d.device_type,
+      ip: d.ip,
+      vendor: d.vendor,
+      model: d.model,
+      protocol: d.protocol,
+      status: d.status,
+      latency_ms: d.latency_ms,
+      packet_loss: d.packet_loss,
+      cpu_pct: d.cpu_pct,
+      uptime_pct: d.uptime_pct,
+      last_seen: d.last_seen,
+    }));
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    exportCsv(`netvision-devices-${ts}.csv`, rows);
+    toast.success(`Exported ${rows.length} devices`);
+  };
 
   return (
     <div className="p-6" data-testid="devices-page">
@@ -138,6 +173,14 @@ export default function Devices() {
         <div className="flex items-center gap-2">
           <button
             className="nv-btn"
+            onClick={handleExport}
+            disabled={filtered.length === 0}
+            data-testid="devices-export-csv-btn"
+          >
+            <Download size={14} /> Export CSV
+          </button>
+          <button
+            className="nv-btn"
             onClick={async () => { await generateMock(); qc.invalidateQueries(); toast.success("Mock data generated"); }}
             data-testid="devices-generate-mock-btn"
           >
@@ -145,7 +188,7 @@ export default function Devices() {
           </button>
           <button
             className="nv-btn nv-btn-danger"
-            onClick={async () => { if (confirm("Clear all devices and alerts?")) { await resetAll(); qc.invalidateQueries(); toast.success("Cleared"); } }}
+            onClick={async () => { if (window.confirm("Clear all devices and alerts?")) { await resetAll(); qc.invalidateQueries(); toast.success("Cleared"); } }}
             data-testid="devices-reset-btn"
           >
             <Eraser size={14} /> Reset
@@ -160,8 +203,8 @@ export default function Devices() {
         </div>
       </div>
 
-      {/* Filter chips */}
-      <div className="flex gap-2 mb-3">
+      {/* Filter chips + search */}
+      <div className="flex gap-2 mb-3 items-center flex-wrap">
         {["all", ...TYPES].map((t) => (
           <button
             key={t}
@@ -172,7 +215,26 @@ export default function Devices() {
             {t.toUpperCase()}
           </button>
         ))}
-        <div className="ml-auto text-[11px] font-mono text-nv-muted self-center">
+        <div className="ml-2 flex items-center gap-2 flex-1 min-w-[200px]">
+          <Search size={14} className="text-nv-muted" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search name, IP, vendor, model, protocol…"
+            className="nv-input flex-1 px-3 py-1.5 text-[12px] rounded-sm max-w-[420px]"
+            data-testid="devices-search-input"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="text-[11px] text-nv-muted hover:text-white font-mono"
+              data-testid="devices-search-clear"
+            >
+              CLEAR
+            </button>
+          )}
+        </div>
+        <div className="text-[11px] font-mono text-nv-muted">
           {filtered.length} / {devices.length} devices
         </div>
       </div>
@@ -189,7 +251,7 @@ export default function Devices() {
               <th>Protocol</th>
               <th>Latency</th>
               <th>CPU</th>
-              <th style={{ width: 110 }}>Actions</th>
+              <th style={{ width: 140 }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -206,7 +268,15 @@ export default function Devices() {
                 <td className="font-mono">{d.latency_ms}ms</td>
                 <td className="font-mono">{d.cpu_pct}%</td>
                 <td>
-                  <div className="flex gap-2">
+                  <div className="flex gap-3 items-center">
+                    <button
+                      className="text-nv-muted hover:text-[#16c79a]"
+                      onClick={() => setChartDevice(d)}
+                      data-testid={`device-chart-${d.id}`}
+                      title="History"
+                    >
+                      <LineIcon size={14} />
+                    </button>
                     <button
                       className="text-nv-muted hover:text-[#16c79a]"
                       onClick={() => { setEditing(d); setModalOpen(true); }}
@@ -217,7 +287,7 @@ export default function Devices() {
                     </button>
                     <button
                       className="text-nv-muted hover:text-[#e74c3c]"
-                      onClick={() => { if (confirm(`Delete ${d.name}?`)) mDelete.mutate(d.id); }}
+                      onClick={() => { if (window.confirm(`Delete ${d.name}?`)) mDelete.mutate(d.id); }}
                       data-testid={`device-delete-${d.id}`}
                       title="Delete"
                     >
@@ -240,6 +310,10 @@ export default function Devices() {
         initial={editing}
         onSubmit={onSubmit}
       />
+
+      {chartDevice && (
+        <MetricChartModal device={chartDevice} onClose={() => setChartDevice(null)} />
+      )}
     </div>
   );
 }

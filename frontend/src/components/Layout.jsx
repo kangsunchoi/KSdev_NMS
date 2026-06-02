@@ -1,8 +1,10 @@
 import React from "react";
 import Sidebar from "./Sidebar";
 import { Toaster } from "sonner";
+import useLiveData from "../hooks/useLiveData";
 
 export const Layout = ({ children }) => {
+  useLiveData();
   return (
     <div className="min-h-screen bg-nv-bg text-nv-text">
       <Sidebar />

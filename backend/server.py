@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,6 +6,7 @@ import os
 import logging
 import random
 import asyncio
+import json
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Literal
@@ -22,6 +23,11 @@ db = client[os.environ['DB_NAME']]
 
 app = FastAPI(title="NetVision OT API")
 api_router = APIRouter(prefix="/api")
+
+# Tick counter for metric sampling cadence
+_TICK = 0
+_SAMPLE_EVERY = 12  # 12 * 5s = 60s sampling
+_METRIC_TTL_SEC = 24 * 60 * 60  # 24h
 
 # ---------------- MODELS ---------------- #
 
@@ -357,19 +363,127 @@ async def generate_mock(replace: bool = True):
 async def reset_all():
     await db.devices.delete_many({})
     await db.alerts.delete_many({})
+    await db.device_metrics.delete_many({})
     return {"status": "cleared"}
+
+
+# Device metric history (last N hours, default 24h)
+@api_router.get("/devices/{device_id}/metrics")
+async def device_metrics(device_id: str, hours: int = 24):
+    hours = max(1, min(hours, 168))
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    cursor = db.device_metrics.find(
+        {"device_id": device_id, "ts": {"$gte": since}},
+        {"_id": 0},
+    ).sort("ts", 1)
+    points = await cursor.to_list(20000)
+    return {"device_id": device_id, "hours": hours, "points": points}
+
+
+# Bulk acknowledge alerts
+class BulkAckPayload(BaseModel):
+    ids: Optional[List[str]] = None  # if None, ack ALL open
+
+
+@api_router.post("/alerts/bulk-acknowledge")
+async def bulk_ack(payload: BulkAckPayload):
+    q: dict = {"acknowledged": False}
+    if payload.ids:
+        q["id"] = {"$in": payload.ids}
+    result = await db.alerts.update_many(q, {"$set": {"acknowledged": True}})
+    return {"acknowledged": result.modified_count}
+
+
+# ---------------- WEBSOCKET ---------------- #
+
+class WSManager:
+    def __init__(self):
+        self.clients: set[WebSocket] = set()
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.clients.add(ws)
+
+    def disconnect(self, ws: WebSocket):
+        self.clients.discard(ws)
+
+    async def broadcast(self, payload: dict):
+        if not self.clients:
+            return
+        msg = json.dumps(payload, default=str)
+        dead = []
+        for ws in list(self.clients):
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.clients.discard(ws)
+
+
+ws_manager = WSManager()
+
+
+@api_router.websocket("/ws")
+async def ws_endpoint(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        # send an initial snapshot
+        snap = await _build_snapshot()
+        await websocket.send_text(json.dumps(snap, default=str))
+        while True:
+            # keep connection alive; ignore incoming messages
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+    except Exception:
+        ws_manager.disconnect(websocket)
+
+
+async def _build_snapshot() -> dict:
+    devices = await db.devices.find({}, {"_id": 0}).to_list(1000)
+    alerts = await db.alerts.find({}, {"_id": 0}).sort("timestamp", -1).to_list(200)
+    total = len(devices)
+    online = sum(1 for d in devices if d["status"] == "online")
+    warning = sum(1 for d in devices if d["status"] == "warning")
+    critical = sum(1 for d in devices if d["status"] in ("critical", "offline"))
+    open_alerts = sum(1 for a in alerts if not a["acknowledged"])
+    critical_alerts = sum(1 for a in alerts if not a["acknowledged"] and a["severity"] == "critical")
+    if total == 0:
+        health = 100
+    else:
+        score = (online * 100 + warning * 60 + critical * 0) / total
+        score -= min(critical_alerts * 3, 25)
+        health = max(0, min(100, round(score)))
+    avg_lat = round(sum(d.get("latency_ms", 0) for d in devices) / total, 2) if total else 0.0
+    avg_pl = round(sum(d.get("packet_loss", 0) for d in devices) / total, 2) if total else 0.0
+    return {
+        "type": "tick",
+        "summary": {
+            "total": total, "online": online, "warning": warning, "critical": critical,
+            "open_alerts": open_alerts, "critical_alerts": critical_alerts,
+            "health_score": health, "avg_latency_ms": avg_lat, "avg_packet_loss": avg_pl,
+        },
+        "devices": devices,
+        "alerts": alerts,
+    }
 
 
 # ---------------- SIMULATION TASK ---------------- #
 
 async def simulate_metrics_loop():
     """Periodically jiggle device metrics & sometimes flip status / create alerts."""
+    global _TICK
     while True:
         try:
             await asyncio.sleep(5)
+            _TICK += 1
             devices = await db.devices.find({}, {"_id": 0}).to_list(1000)
             if not devices:
                 continue
+            metric_docs = []
+            sample_now = (_TICK % _SAMPLE_EVERY == 0)
+            now_iso = datetime.now(timezone.utc).isoformat()
             for d in devices:
                 # jiggle metrics
                 latency = max(0.1, d.get("latency_ms", 1.0) + random.uniform(-1.5, 1.8))
@@ -398,7 +512,7 @@ async def simulate_metrics_loop():
                     "latency_ms": round(latency, 2),
                     "packet_loss": round(ploss, 2),
                     "cpu_pct": round(cpu, 1),
-                    "last_seen": datetime.now(timezone.utc).isoformat(),
+                    "last_seen": now_iso,
                     "status": new_status,
                 }
                 await db.devices.update_one({"id": d["id"]}, {"$set": update})
@@ -413,9 +527,28 @@ async def simulate_metrics_loop():
                     }
                     await _create_alert(d, sev, msg_map.get(new_status, "Anomaly"))
 
+                if sample_now:
+                    metric_docs.append({
+                        "device_id": d["id"],
+                        "ts": now_iso,
+                        "ts_dt": datetime.now(timezone.utc),  # for TTL index
+                        "latency_ms": round(latency, 2),
+                        "packet_loss": round(ploss, 2),
+                        "cpu_pct": round(cpu, 1),
+                        "status": new_status,
+                    })
+
+            if metric_docs:
+                await db.device_metrics.insert_many(metric_docs)
+
             # purge very old acknowledged alerts (>2h)
             cutoff = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
             await db.alerts.delete_many({"acknowledged": True, "timestamp": {"$lt": cutoff}})
+
+            # Broadcast snapshot to WS clients
+            if ws_manager.clients:
+                snap = await _build_snapshot()
+                await ws_manager.broadcast(snap)
         except Exception as e:
             logging.exception("simulation error: %s", e)
 
@@ -441,6 +574,12 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def startup():
+    # TTL index for metric history (24h)
+    try:
+        await db.device_metrics.create_index("ts_dt", expireAfterSeconds=_METRIC_TTL_SEC)
+        await db.device_metrics.create_index([("device_id", 1), ("ts", 1)])
+    except Exception as e:
+        logger.warning("index create failed: %s", e)
     await _ensure_seed()
     asyncio.create_task(simulate_metrics_loop())
     logger.info("NetVision OT started — simulation loop running")

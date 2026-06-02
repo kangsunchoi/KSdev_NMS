@@ -17,5 +17,10 @@ export const deleteAlert = (id) => api.delete(`/alerts/${id}`).then((r) => r.dat
 export const fetchTopology = () => api.get("/topology").then((r) => r.data);
 export const fetchSummary = () => api.get("/dashboard/summary").then((r) => r.data);
 
+export const fetchDeviceMetrics = (id, hours = 24) =>
+  api.get(`/devices/${id}/metrics`, { params: { hours } }).then((r) => r.data);
+export const bulkAcknowledgeAlerts = (ids) =>
+  api.post(`/alerts/bulk-acknowledge`, { ids }).then((r) => r.data);
+
 export const generateMock = () => api.post("/mock/generate").then((r) => r.data);
 export const resetAll = () => api.post("/mock/reset").then((r) => r.data);

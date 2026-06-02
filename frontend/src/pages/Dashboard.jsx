@@ -24,9 +24,9 @@ const SeverityText = ({ s }) => (
 );
 
 export default function Dashboard() {
-  const summary = useQuery({ queryKey: ["summary"], queryFn: fetchSummary, refetchInterval: 4000 });
-  const alerts = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts, refetchInterval: 5000 });
-  const devices = useQuery({ queryKey: ["devices"], queryFn: fetchDevices, refetchInterval: 6000 });
+  const summary = useQuery({ queryKey: ["summary"], queryFn: fetchSummary });
+  const alerts = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts });
+  const devices = useQuery({ queryKey: ["devices"], queryFn: fetchDevices });
 
   const handleGenerate = async () => {
     try {

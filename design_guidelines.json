@@ -1,0 +1,93 @@
+{
+  "theme": "DARK",
+  "archetype": "Archetype 4 (Swiss & High-Contrast) adapted for Industrial SCADA/HMI",
+  "vibe": "Dark industrial control room. High information density. Functional over beautiful. SCADA/HMI interface.",
+  "colors": {
+    "background": "#1a1a2e",
+    "surface": "#16213e",
+    "border": "#2a3b55",
+    "primary": "#16c79a",
+    "accent_warning": "#f4d03f",
+    "accent_critical": "#e74c3c",
+    "text_primary": "#f8f9fa",
+    "text_secondary": "#94a3b8",
+    "topology_grid": "#252a40"
+  },
+  "typography": {
+    "heading_font": "Inter, sans-serif",
+    "body_font": "Inter, sans-serif",
+    "mono_font": "JetBrains Mono, monospace",
+    "rules": [
+      "Use JetBrains Mono for ALL data, metrics, IP addresses, table values, and numerical outputs.",
+      "Use Inter for UI labels, headers, button text, and navigational elements."
+    ]
+  },
+  "layout_spacing": {
+    "grid_mode": "Control Room Grid (Dense)",
+    "rules": [
+      "Strict grid hierarchy, dense and compact spacing.",
+      "Cards have sharp corners (max 2-4px radius, `rounded-sm`).",
+      "1px solid borders (`border-[#2a3b55]`), no heavy shadows, no glassmorphism, no gradients.",
+      "Every pixel conveys status or data. Optical alignment is key."
+    ]
+  },
+  "components": {
+    "tables": {
+      "row_height": "Compact (40px)",
+      "styling": "Alternating row backgrounds (#1a1a2e / #16213e), no standard zebra striping.",
+      "typography": "Monospace used for IP addresses and metrics."
+    },
+    "cards": {
+      "background": "#16213e",
+      "border": "1px solid #2a3b55",
+      "shadows": "none",
+      "radius": "2-4px (rounded-sm)"
+    },
+    "status_indicators": {
+      "style": "Small LED-style dots next to device names.",
+      "colors": {
+        "online": "#16c79a",
+        "warning": "#f4d03f",
+        "critical": "#e74c3c"
+      },
+      "rule": "Do NOT use colored background badges for status. Just the LED dot."
+    },
+    "sidebar": {
+      "layout": "Fixed left, collapsible.",
+      "icons": "Line-style (lucide-react), not filled.",
+      "active_state": "Teal accent (#16c79a) on active item."
+    },
+    "topology_viewer": {
+      "library": "Cytoscape.js",
+      "canvas": "Dark canvas with faint grid background pattern (very faint #252a40 dots).",
+      "nodes": {
+        "switch": "blue rectangle",
+        "plc": "green hexagon",
+        "end_device": "gray circle"
+      },
+      "interactions": "Nodes have subtle glow when selected. Click node for side panel details."
+    }
+  },
+  "icons": "lucide-react (line style only)",
+  "animations": "Minimal. Use micro-interactions for feedback. No bouncy or decorative animations.",
+  "testing": "All interactive and key informational elements MUST include a `data-testid` attribute (e.g., `data-testid=\"alert-acknowledge-button\"`).",
+  "image_urls": [
+    {
+      "url": "https://images.pexels.com/photos/17323801/pexels-photo-17323801.jpeg",
+      "category": "empty_state_background",
+      "description": "Modern server room with blue illumination. Use sparingly for empty states or deep background texture at <10% opacity if absolutely necessary. Primary UI must remain flat #1a1a2e."
+    }
+  ],
+  "instructions_to_main_agent": [
+    "Initialize React with Vite/Webpack using JavaScript (.jsx / .js). DO NOT USE .tsx files per the critical rules, despite earlier TS mentions.",
+    "Install `lucide-react`, `cytoscape`, `react-cytoscapejs`.",
+    "Configure Tailwind with the exact colors provided in this JSON.",
+    "Implement the fixed left collapsible sidebar with line-icons.",
+    "Build the dashboard with summary KPI cards (total devices, online count, critical alerts, network health score).",
+    "Build the live alert feed panel and Alerts page with severity colors and acknowledge buttons.",
+    "Build the Device inventory table (add/edit/delete) using the exact 40px row height and alternating backgrounds (#1a1a2e and #16213e).",
+    "Implement Cytoscape.js network topology viewer. Ensure shapes map correctly (Switch=rectangle, PLC=hexagon, End Device=circle).",
+    "Implement FastAPI backend with MongoDB and a mock data generator (20 realistic devices).",
+    "Ensure all buttons, form inputs, links, and actionable elements have a `data-testid` attribute."
+  ]
+}

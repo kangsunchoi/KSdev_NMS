@@ -1,82 +1,59 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-    darkMode: ["class"],
-    content: [
-    "./src/**/*.{js,jsx,ts,tsx}",
-    "./public/index.html"
-  ],
+  darkMode: ["class"],
+  content: ["./src/**/*.{js,jsx,ts,tsx}", "./public/index.html"],
   theme: {
     extend: {
-      borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)'
+      fontFamily: {
+        sans: ["Inter", "system-ui", "sans-serif"],
+        mono: ['"JetBrains Mono"', "ui-monospace", "Menlo", "Consolas", "monospace"],
       },
       colors: {
-        background: 'hsl(var(--background))',
-        foreground: 'hsl(var(--foreground))',
-        card: {
-          DEFAULT: 'hsl(var(--card))',
-          foreground: 'hsl(var(--card-foreground))'
+        nv: {
+          bg: "#1a1a2e",
+          surface: "#16213e",
+          surfaceAlt: "#1f2a4a",
+          border: "#2a3b55",
+          borderStrong: "#3a4f6f",
+          text: "#f8f9fa",
+          muted: "#94a3b8",
+          accent: "#16c79a",
+          warn: "#f4d03f",
+          crit: "#e74c3c",
+          grid: "#252a40",
         },
-        popover: {
-          DEFAULT: 'hsl(var(--popover))',
-          foreground: 'hsl(var(--popover-foreground))'
-        },
-        primary: {
-          DEFAULT: 'hsl(var(--primary))',
-          foreground: 'hsl(var(--primary-foreground))'
-        },
-        secondary: {
-          DEFAULT: 'hsl(var(--secondary))',
-          foreground: 'hsl(var(--secondary-foreground))'
-        },
-        muted: {
-          DEFAULT: 'hsl(var(--muted))',
-          foreground: 'hsl(var(--muted-foreground))'
-        },
-        accent: {
-          DEFAULT: 'hsl(var(--accent))',
-          foreground: 'hsl(var(--accent-foreground))'
-        },
-        destructive: {
-          DEFAULT: 'hsl(var(--destructive))',
-          foreground: 'hsl(var(--destructive-foreground))'
-        },
-        border: 'hsl(var(--border))',
-        input: 'hsl(var(--input))',
-        ring: 'hsl(var(--ring))',
-        chart: {
-          '1': 'hsl(var(--chart-1))',
-          '2': 'hsl(var(--chart-2))',
-          '3': 'hsl(var(--chart-3))',
-          '4': 'hsl(var(--chart-4))',
-          '5': 'hsl(var(--chart-5))'
-        }
+        background: "#1a1a2e",
+        foreground: "#f8f9fa",
+        card: { DEFAULT: "#16213e", foreground: "#f8f9fa" },
+        popover: { DEFAULT: "#16213e", foreground: "#f8f9fa" },
+        primary: { DEFAULT: "#16c79a", foreground: "#0b1220" },
+        secondary: { DEFAULT: "#1f2a4a", foreground: "#f8f9fa" },
+        muted: { DEFAULT: "#1f2a4a", foreground: "#94a3b8" },
+        accent: { DEFAULT: "#16c79a", foreground: "#0b1220" },
+        destructive: { DEFAULT: "#e74c3c", foreground: "#ffffff" },
+        border: "#2a3b55",
+        input: "#2a3b55",
+        ring: "#16c79a",
+      },
+      borderRadius: {
+        lg: "4px",
+        md: "3px",
+        sm: "2px",
       },
       keyframes: {
-        'accordion-down': {
-          from: {
-            height: '0'
-          },
-          to: {
-            height: 'var(--radix-accordion-content-height)'
-          }
+        "accordion-down": { from: { height: "0" }, to: { height: "var(--radix-accordion-content-height)" } },
+        "accordion-up": { from: { height: "var(--radix-accordion-content-height)" }, to: { height: "0" } },
+        "led-pulse": {
+          "0%, 100%": { opacity: "1", transform: "scale(1)" },
+          "50%": { opacity: "0.55", transform: "scale(0.92)" },
         },
-        'accordion-up': {
-          from: {
-            height: 'var(--radix-accordion-content-height)'
-          },
-          to: {
-            height: '0'
-          }
-        }
       },
       animation: {
-        'accordion-down': 'accordion-down 0.2s ease-out',
-        'accordion-up': 'accordion-up 0.2s ease-out'
-      }
-    }
+        "accordion-down": "accordion-down 0.2s ease-out",
+        "accordion-up": "accordion-up 0.2s ease-out",
+        "led-pulse": "led-pulse 1.4s ease-in-out infinite",
+      },
+    },
   },
   plugins: [require("tailwindcss-animate")],
 };

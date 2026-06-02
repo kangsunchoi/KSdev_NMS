@@ -30,6 +30,14 @@ Factory/OT engineer in a control room monitoring switches, PLCs, HMIs, and senso
 - Cytoscape topology with breadth-first hierarchy layout, status-colored borders, side panel on node click.
 - Tailwind theme with custom nv palette + LED dot CSS, compact tables, dotted grid background.
 
+## Implemented (2026-02 iteration 2)
+- **Metric history**: device_metrics MongoDB collection w/ TTL index (24h), sampled every 60s. GET /api/devices/{id}/metrics?hours=N returns sorted points.
+- **Metric chart modal**: recharts LineChart with range (1H/6H/12H/24H) + metric (latency/pkt loss/CPU) selectors + Brush zoom. Opens from Devices table chart icon.
+- **Bulk acknowledge**: POST /api/alerts/bulk-acknowledge {ids?} — empty/null payload acks all open. Per-row checkboxes + select-all on Alerts page.
+- **Text search**: client-side filter on Devices (name/IP/vendor/model/protocol) and Alerts (device/message/severity).
+- **WebSocket push**: /api/ws broadcasts {summary, devices, alerts} every 5s. useLiveData hook drives React Query cache; refetchInterval removed from all main queries.
+- **CSV export**: client-side CSV builder (`/lib/csv.js`), Export buttons on Devices and Alerts pages.
+
 ## Backlog
 - P1: Per-device historical metric chart (recharts) on click.
 - P1: Bulk acknowledge alerts.

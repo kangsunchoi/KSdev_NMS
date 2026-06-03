@@ -29,6 +29,22 @@ _TICK = 0
 _SAMPLE_EVERY = 12  # 12 * 5s = 60s sampling
 _METRIC_TTL_SEC = 24 * 60 * 60  # 24h
 
+# ---------------- SIMULATION MODE ---------------- #
+# Persistent default from .env. "true" preserves the original demo behavior
+# (auto-seed 20 mock devices + random jiggle). Set to "false" for live/ingest mode
+# so real data pushed via /api/ingest is NOT overwritten by the simulator.
+_SIM_ENV = os.environ.get("SIMULATION_MODE", "true").strip().lower() in ("1", "true", "yes", "on")
+# Runtime override via POST /api/sim/mode (None = use env value). Resets on restart.
+_SIM_OVERRIDE: Optional[bool] = None
+# Timestamp of the last successful ingest (for status endpoint)
+_LAST_INGEST_TS: Optional[str] = None
+
+
+def sim_on() -> bool:
+    """Effective simulation mode: runtime override wins over env default."""
+    return _SIM_ENV if _SIM_OVERRIDE is None else _SIM_OVERRIDE
+
+
 # ---------------- MODELS ---------------- #
 
 DeviceType = Literal["switch", "plc", "hmi", "sensor"]
@@ -192,6 +208,47 @@ async def _create_alert(device: dict, severity: AlertSeverity, message: str, for
     )
     await db.alerts.insert_one(alert.model_dump())
     return alert
+
+
+def _derive_status(prev_status: str, candidate: str, latency: float, ploss: float) -> str:
+    """Deterministic status derivation from metrics.
+
+    Extracted verbatim from the original simulation loop so that BOTH the
+    simulator and the live ingestion path judge status identically.
+    `candidate` is the starting status (for the simulator this may already
+    reflect its rare random flip; for ingestion it equals prev_status).
+    """
+    new_status = candidate
+    if prev_status != "offline":
+        if ploss > 8 or latency > 80:
+            new_status = "critical"
+        elif ploss > 4 or latency > 45:
+            new_status = "warning"
+        elif ploss < 1.5 and latency < 25:
+            new_status = "online"
+    return new_status
+
+
+def _worsen_message(name: str, new_status: str, latency: float, ploss: float) -> str:
+    """Alert text for a worsening transition (same wording as the simulator)."""
+    return {
+        "warning": f"{name}: degraded performance (latency {round(latency, 1)}ms)",
+        "critical": f"{name}: critical state (packet loss {round(ploss, 1)}%)",
+        "offline": f"{name}: lost contact",
+    }.get(new_status, "Anomaly")
+
+
+def _metric_doc(device_id: str, ts_iso: str, latency: float, ploss: float, cpu: float, status: str) -> dict:
+    """Build one time-series history point (same shape used by the simulator)."""
+    return {
+        "device_id": device_id,
+        "ts": ts_iso,
+        "ts_dt": datetime.now(timezone.utc),  # for TTL index
+        "latency_ms": round(latency, 2),
+        "packet_loss": round(ploss, 2),
+        "cpu_pct": round(cpu, 1),
+        "status": status,
+    }
 
 
 async def _ensure_seed():
@@ -438,6 +495,160 @@ async def bulk_ack(payload: BulkAckPayload):
     return {"acknowledged": result.modified_count}
 
 
+# ---------------- INGESTION (live data from external collectors) ---------------- #
+
+class MetricSample(BaseModel):
+    """One measurement from an external collector (Node-RED / Telegraf / etc.).
+
+    Identify the target device by ANY of device_id / ip / name (checked in that order).
+    Provide whatever metrics you have — omitted fields keep their previous value.
+    """
+    model_config = ConfigDict(extra="ignore")
+    device_id: Optional[str] = None
+    ip: Optional[str] = None
+    name: Optional[str] = None
+    reachable: Optional[bool] = None        # ICMP ping up/down (False -> offline)
+    latency_ms: Optional[float] = None
+    packet_loss: Optional[float] = None
+    cpu_pct: Optional[float] = None
+    uptime_pct: Optional[float] = None
+    status: Optional[DeviceStatus] = None   # explicit status overrides derivation
+    ts: Optional[str] = None                # collector timestamp (ISO); default = now
+
+
+class IngestPayload(BaseModel):
+    samples: List[MetricSample]
+
+
+async def _resolve_device(s: MetricSample) -> Optional[dict]:
+    if s.device_id:
+        d = await db.devices.find_one({"id": s.device_id}, {"_id": 0})
+        if d:
+            return d
+    if s.ip:
+        d = await db.devices.find_one({"ip": s.ip}, {"_id": 0})
+        if d:
+            return d
+    if s.name:
+        d = await db.devices.find_one({"name": s.name}, {"_id": 0})
+        if d:
+            return d
+    return None
+
+
+@api_router.post("/ingest")
+async def ingest(payload: IngestPayload, auto_create: bool = False):
+    """Accept real metrics from external collectors and run them through the
+    SAME judgment -> alert -> history -> WebSocket pipeline the simulator uses.
+
+    - auto_create=true  : if a sample's device is not found, create a minimal
+                          device (type=switch, vendor/model=Unknown) so it shows up.
+    - auto_create=false : unmatched samples are skipped and reported back.
+    """
+    global _LAST_INGEST_TS
+    updated = 0
+    created = 0
+    unmatched: List[str] = []
+    metric_docs: List[dict] = []
+
+    for s in payload.samples:
+        device = await _resolve_device(s)
+
+        # auto-create a minimal device if requested and not found
+        if device is None and auto_create and (s.ip or s.name):
+            dev = Device(
+                name=s.name or s.ip or "device",
+                ip=s.ip or "0.0.0.0",
+                vendor="Unknown",
+                model="Unknown",
+                protocol="ICMP",
+                device_type="switch",
+            )
+            await db.devices.insert_one(dev.model_dump())
+            device = dev.model_dump()
+            created += 1
+
+        if device is None:
+            unmatched.append(s.device_id or s.ip or s.name or "unknown")
+            continue
+
+        prev_status = device["status"]
+        # merge metrics: provided values win, omitted keep previous
+        latency = float(s.latency_ms) if s.latency_ms is not None else float(device.get("latency_ms", 0.0))
+        ploss = float(s.packet_loss) if s.packet_loss is not None else float(device.get("packet_loss", 0.0))
+        cpu = float(s.cpu_pct) if s.cpu_pct is not None else float(device.get("cpu_pct", 0.0))
+        uptime = float(s.uptime_pct) if s.uptime_pct is not None else float(device.get("uptime_pct", 100.0))
+
+        # determine new status
+        if s.status is not None:
+            new_status = s.status
+        elif s.reachable is False:
+            new_status = "offline"
+        else:
+            # allow recovery: if device was offline and is now reachable, re-evaluate from metrics
+            base = "online" if (s.reachable is True and prev_status == "offline") else prev_status
+            new_status = _derive_status(base, base, latency, ploss)
+
+        now_iso = s.ts or datetime.now(timezone.utc).isoformat()
+        await db.devices.update_one(
+            {"id": device["id"]},
+            {"$set": {
+                "latency_ms": round(latency, 2),
+                "packet_loss": round(ploss, 2),
+                "cpu_pct": round(cpu, 1),
+                "uptime_pct": round(uptime, 2),
+                "last_seen": now_iso,
+                "status": new_status,
+            }},
+        )
+
+        # create alert on worsening transition (same rule as the simulator)
+        if new_status != prev_status and new_status in ("warning", "critical", "offline"):
+            sev: AlertSeverity = "critical" if new_status in ("critical", "offline") else "warning"
+            await _create_alert(device, sev, _worsen_message(device["name"], new_status, latency, ploss))
+
+        metric_docs.append(_metric_doc(device["id"], now_iso, latency, ploss, cpu, new_status))
+        updated += 1
+
+    if metric_docs:
+        await db.device_metrics.insert_many(metric_docs)
+
+    _LAST_INGEST_TS = datetime.now(timezone.utc).isoformat()
+
+    # push fresh snapshot to dashboards
+    if ws_manager.clients:
+        snap = await _build_snapshot()
+        await ws_manager.broadcast(snap)
+
+    return {
+        "received": len(payload.samples),
+        "updated": updated,
+        "created": created,
+        "unmatched": unmatched,
+        "simulation_mode": sim_on(),
+    }
+
+
+# Simulation mode control (for switching demo <-> live without editing files)
+class SimModePayload(BaseModel):
+    enabled: bool
+
+
+@api_router.get("/sim/mode")
+async def get_sim_mode():
+    return {"simulation_mode": sim_on(), "env_default": _SIM_ENV, "override": _SIM_OVERRIDE,
+            "last_ingest_ts": _LAST_INGEST_TS}
+
+
+@api_router.post("/sim/mode")
+async def set_sim_mode(payload: SimModePayload):
+    """Toggle the simulator at runtime. NOTE: this override resets on restart;
+    set SIMULATION_MODE in backend/.env for the persistent default."""
+    global _SIM_OVERRIDE
+    _SIM_OVERRIDE = payload.enabled
+    return {"simulation_mode": sim_on(), "note": "runtime override; resets on restart"}
+
+
 # ---------------- WEBSOCKET ---------------- #
 
 class WSManager:
@@ -513,79 +724,72 @@ async def _build_snapshot() -> dict:
     }
 
 
-# ---------------- SIMULATION TASK ---------------- #
+# ---------------- METRICS LOOP (simulation + periodic broadcast) ---------------- #
 
-async def simulate_metrics_loop():
-    """Periodically jiggle device metrics & sometimes flip status / create alerts."""
+async def _simulate_tick():
+    """One simulation step: jiggle metrics, maybe flip status, create alerts, sample history.
+
+    This is the original per-device simulation body, unchanged in behavior. It only
+    runs when simulation mode is ON.
+    """
+    devices = await db.devices.find({}, {"_id": 0}).to_list(1000)
+    if not devices:
+        return
+    metric_docs = []
+    sample_now = (_TICK % _SAMPLE_EVERY == 0)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for d in devices:
+        # jiggle metrics
+        latency = max(0.1, d.get("latency_ms", 1.0) + random.uniform(-1.5, 1.8))
+        ploss = max(0.0, min(100.0, d.get("packet_loss", 0.0) + random.uniform(-0.4, 0.6)))
+        cpu = max(0.0, min(100.0, d.get("cpu_pct", 30.0) + random.uniform(-3.0, 4.0)))
+
+        # rare random status change (simulation only)
+        candidate = d["status"]
+        if random.random() < 0.02:
+            candidate = random.choices(
+                ["online", "warning", "critical", "offline"],
+                weights=[70, 15, 10, 5],
+            )[0]
+
+        # derive status from metrics (shared with ingestion)
+        new_status = _derive_status(d["status"], candidate, latency, ploss)
+
+        update = {
+            "latency_ms": round(latency, 2),
+            "packet_loss": round(ploss, 2),
+            "cpu_pct": round(cpu, 1),
+            "last_seen": now_iso,
+            "status": new_status,
+        }
+        await db.devices.update_one({"id": d["id"]}, {"$set": update})
+
+        # create alert if status worsened
+        if new_status != d["status"] and new_status in ("warning", "critical", "offline"):
+            sev: AlertSeverity = "critical" if new_status in ("critical", "offline") else "warning"
+            await _create_alert(d, sev, _worsen_message(d["name"], new_status, latency, ploss))
+
+        if sample_now:
+            metric_docs.append(_metric_doc(d["id"], now_iso, latency, ploss, cpu, new_status))
+
+    if metric_docs:
+        await db.device_metrics.insert_many(metric_docs)
+
+
+async def metrics_loop():
+    """Runs every 5s. Generates data only in simulation mode; always purges old
+    acknowledged alerts and broadcasts a fresh snapshot so dashboards stay live
+    whether data comes from the simulator or from /api/ingest."""
     global _TICK
     while True:
         try:
             await asyncio.sleep(5)
             _TICK += 1
-            devices = await db.devices.find({}, {"_id": 0}).to_list(1000)
-            if not devices:
-                continue
-            metric_docs = []
-            sample_now = (_TICK % _SAMPLE_EVERY == 0)
-            now_iso = datetime.now(timezone.utc).isoformat()
-            for d in devices:
-                # jiggle metrics
-                latency = max(0.1, d.get("latency_ms", 1.0) + random.uniform(-1.5, 1.8))
-                ploss = max(0.0, min(100.0, d.get("packet_loss", 0.0) + random.uniform(-0.4, 0.6)))
-                cpu = max(0.0, min(100.0, d.get("cpu_pct", 30.0) + random.uniform(-3.0, 4.0)))
 
-                # rare status change
-                new_status = d["status"]
-                roll = random.random()
-                if roll < 0.02:
-                    new_status = random.choices(
-                        ["online", "warning", "critical", "offline"],
-                        weights=[70, 15, 10, 5],
-                    )[0]
+            if sim_on():
+                await _simulate_tick()
 
-                # derive status from metrics
-                if d["status"] != "offline":
-                    if ploss > 8 or latency > 80:
-                        new_status = "critical"
-                    elif ploss > 4 or latency > 45:
-                        new_status = "warning"
-                    elif ploss < 1.5 and latency < 25:
-                        new_status = "online"
-
-                update = {
-                    "latency_ms": round(latency, 2),
-                    "packet_loss": round(ploss, 2),
-                    "cpu_pct": round(cpu, 1),
-                    "last_seen": now_iso,
-                    "status": new_status,
-                }
-                await db.devices.update_one({"id": d["id"]}, {"$set": update})
-
-                # create alert if status worsened
-                if new_status != d["status"] and new_status in ("warning", "critical", "offline"):
-                    sev: AlertSeverity = "critical" if new_status in ("critical", "offline") else "warning"
-                    msg_map = {
-                        "warning": f"{d['name']}: degraded performance (latency {round(latency,1)}ms)",
-                        "critical": f"{d['name']}: critical state (packet loss {round(ploss,1)}%)",
-                        "offline": f"{d['name']}: lost contact",
-                    }
-                    await _create_alert(d, sev, msg_map.get(new_status, "Anomaly"))
-
-                if sample_now:
-                    metric_docs.append({
-                        "device_id": d["id"],
-                        "ts": now_iso,
-                        "ts_dt": datetime.now(timezone.utc),  # for TTL index
-                        "latency_ms": round(latency, 2),
-                        "packet_loss": round(ploss, 2),
-                        "cpu_pct": round(cpu, 1),
-                        "status": new_status,
-                    })
-
-            if metric_docs:
-                await db.device_metrics.insert_many(metric_docs)
-
-            # purge very old acknowledged alerts (>2h)
+            # purge very old acknowledged alerts (>2h) — applies to both modes
             cutoff = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
             await db.alerts.delete_many({"acknowledged": True, "timestamp": {"$lt": cutoff}})
 
@@ -594,7 +798,7 @@ async def simulate_metrics_loop():
                 snap = await _build_snapshot()
                 await ws_manager.broadcast(snap)
         except Exception as e:
-            logging.exception("simulation error: %s", e)
+            logging.exception("metrics loop error: %s", e)
 
 
 # ---------------- APP WIRING ---------------- #
@@ -622,11 +826,14 @@ async def startup():
     try:
         await db.device_metrics.create_index("ts_dt", expireAfterSeconds=_METRIC_TTL_SEC)
         await db.device_metrics.create_index([("device_id", 1), ("ts", 1)])
+        await db.devices.create_index("ip")  # speed up ingest lookups by IP
     except Exception as e:
         logger.warning("index create failed: %s", e)
-    await _ensure_seed()
-    asyncio.create_task(simulate_metrics_loop())
-    logger.info("NetVision OT started — simulation loop running")
+    # Only auto-seed mock devices in simulation mode
+    if sim_on():
+        await _ensure_seed()
+    asyncio.create_task(metrics_loop())
+    logger.info("NetVision OT started — mode=%s", "simulation" if sim_on() else "live(ingest)")
 
 
 @app.on_event("shutdown")

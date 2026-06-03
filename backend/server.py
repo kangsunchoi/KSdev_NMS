@@ -251,6 +251,21 @@ def _metric_doc(device_id: str, ts_iso: str, latency: float, ploss: float, cpu: 
     }
 
 
+async def _resolve_device_alerts(device_id: str) -> int:
+    """Auto-resolve: when a device recovers to 'online', mark its still-open
+    alerts as acknowledged so they drop out of the active list (the periodic
+    2h purge then removes them). Returns how many alerts were resolved.
+
+    Shared by both the simulator and the live ingestion path so recovery
+    behaves identically regardless of where the data came from.
+    """
+    result = await db.alerts.update_many(
+        {"device_id": device_id, "acknowledged": False},
+        {"$set": {"acknowledged": True}},
+    )
+    return result.modified_count
+
+
 async def _ensure_seed():
     count = await db.devices.count_documents({})
     if count == 0:
@@ -607,6 +622,10 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
             sev: AlertSeverity = "critical" if new_status in ("critical", "offline") else "warning"
             await _create_alert(device, sev, _worsen_message(device["name"], new_status, latency, ploss))
 
+        # auto-resolve: device recovered to online -> clear its open alerts
+        if prev_status != "online" and new_status == "online":
+            await _resolve_device_alerts(device["id"])
+
         metric_docs.append(_metric_doc(device["id"], now_iso, latency, ploss, cpu, new_status))
         updated += 1
 
@@ -768,6 +787,10 @@ async def _simulate_tick():
         if new_status != d["status"] and new_status in ("warning", "critical", "offline"):
             sev: AlertSeverity = "critical" if new_status in ("critical", "offline") else "warning"
             await _create_alert(d, sev, _worsen_message(d["name"], new_status, latency, ploss))
+
+        # auto-resolve: device recovered to online -> clear its open alerts
+        if d["status"] != "online" and new_status == "online":
+            await _resolve_device_alerts(d["id"])
 
         if sample_now:
             metric_docs.append(_metric_doc(d["id"], now_iso, latency, ploss, cpu, new_status))

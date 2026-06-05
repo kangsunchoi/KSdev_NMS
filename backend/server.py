@@ -332,6 +332,8 @@ async def delete_device(device_id: str):
     await db.devices.update_many({"parent_id": device_id}, {"$set": {"parent_id": None}})
     await db.alerts.delete_many({"device_id": device_id})
     await db.links.delete_many({"$or": [{"source_id": device_id}, {"target_id": device_id}]})
+    await db.device_kv.delete_many({"device_id": device_id})
+    await db.unified_metrics.delete_many({"device_id": device_id})
     return {"deleted": device_id}
 
 
@@ -492,6 +494,80 @@ async def reset_links():
     return {"deleted": res.deleted_count}
 
 
+# ---------------- GENERIC METRICS (UnifiedMetric: arbitrary named values) ---------------- #
+# For non-network data (PLC registers via Modbus, OPC UA nodes, etc.) that don't fit the
+# fixed device fields. Collectors POST named metrics here; latest value + time-series stored.
+
+class GenericSample(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    device_id: Optional[str] = None
+    ip: Optional[str] = None
+    name: Optional[str] = None
+    metric_name: str            # e.g. "plc.temperature", "plc.run_status"
+    value: float
+    unit: Optional[str] = ""
+    ts: Optional[str] = None
+
+
+class MetricsPayload(BaseModel):
+    samples: List[GenericSample]
+
+
+@api_router.post("/metrics")
+async def ingest_metrics(payload: MetricsPayload):
+    """Ingest arbitrary named metrics. Resolves device by id/ip/name, stores the
+    latest value (device_kv) plus a time-series point (unified_metrics), and
+    bumps last_seen. Does NOT touch network status (that stays with ping/SNMP)."""
+    updated = 0
+    unmatched = []
+    docs = []
+    touched = set()
+    now = datetime.now(timezone.utc).isoformat()
+    for s in payload.samples:
+        dev = await _find_device(s.device_id, s.ip, s.name)
+        if not dev:
+            unmatched.append(s.device_id or s.ip or s.name or s.metric_name)
+            continue
+        ts = s.ts or now
+        docs.append({
+            "device_id": dev["id"], "metric_name": s.metric_name,
+            "value": float(s.value), "unit": s.unit or "",
+            "ts": ts, "ts_dt": datetime.now(timezone.utc),
+        })
+        await db.device_kv.update_one(
+            {"device_id": dev["id"], "metric_name": s.metric_name},
+            {"$set": {"device_id": dev["id"], "metric_name": s.metric_name,
+                      "value": float(s.value), "unit": s.unit or "", "ts": ts}},
+            upsert=True,
+        )
+        touched.add(dev["id"])
+        updated += 1
+    if docs:
+        await db.unified_metrics.insert_many(docs)
+    for did in touched:
+        await db.devices.update_one({"id": did}, {"$set": {"last_seen": now}})
+    return {"received": len(payload.samples), "updated": updated, "unmatched": unmatched}
+
+
+@api_router.get("/devices/{device_id}/kv")
+async def device_kv(device_id: str):
+    """Latest value of each generic metric for a device."""
+    rows = await db.device_kv.find({"device_id": device_id}, {"_id": 0}).to_list(500)
+    return rows
+
+
+@api_router.get("/devices/{device_id}/series")
+async def device_series(device_id: str, metric: str, hours: int = 24):
+    """Time-series of one named metric for a device."""
+    hours = max(1, min(hours, 168))
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    rows = await db.unified_metrics.find(
+        {"device_id": device_id, "metric_name": metric, "ts": {"$gte": since}},
+        {"_id": 0},
+    ).sort("ts", 1).to_list(20000)
+    return {"device_id": device_id, "metric": metric, "points": rows}
+
+
 # Zones list
 @api_router.get("/zones")
 async def list_zones():
@@ -577,6 +653,8 @@ async def reset_all():
     await db.alerts.delete_many({})
     await db.device_metrics.delete_many({})
     await db.links.delete_many({})
+    await db.device_kv.delete_many({})
+    await db.unified_metrics.delete_many({})
     return {"status": "cleared"}
 
 
@@ -951,6 +1029,9 @@ async def startup():
         await db.device_metrics.create_index([("device_id", 1), ("ts", 1)])
         await db.devices.create_index("ip")  # speed up ingest lookups by IP
         await db.links.create_index([("source_id", 1), ("target_id", 1)], unique=True)
+        await db.unified_metrics.create_index("ts_dt", expireAfterSeconds=_METRIC_TTL_SEC)
+        await db.unified_metrics.create_index([("device_id", 1), ("metric_name", 1), ("ts", 1)])
+        await db.device_kv.create_index([("device_id", 1), ("metric_name", 1)], unique=True)
     except Exception as e:
         logger.warning("index create failed: %s", e)
     # Only auto-seed mock devices in simulation mode

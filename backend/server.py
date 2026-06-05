@@ -328,9 +328,10 @@ async def delete_device(device_id: str):
     result = await db.devices.delete_one({"id": device_id})
     if result.deleted_count == 0:
         raise HTTPException(404, "Device not found")
-    # cascade: clear parent_id refs and alerts
+    # cascade: clear parent_id refs, alerts, and topology links
     await db.devices.update_many({"parent_id": device_id}, {"$set": {"parent_id": None}})
     await db.alerts.delete_many({"device_id": device_id})
+    await db.links.delete_many({"$or": [{"source_id": device_id}, {"target_id": device_id}]})
     return {"deleted": device_id}
 
 
@@ -385,12 +386,110 @@ async def topology():
             data["parent"] = f"zone-{d['zone']}"
         nodes.append({"data": data})
 
+    device_ids = {d["id"] for d in devices}
     edges = [
         {"data": {"id": f"e-{d['id']}", "source": d["parent_id"], "target": d["id"]}}
         for d in devices
-        if d.get("parent_id")
+        if d.get("parent_id") and d["parent_id"] in device_ids
     ]
+    # LLDP/CDP discovered links (drawn as additional edges; stale ones skipped)
+    links = await db.links.find({}, {"_id": 0}).to_list(5000)
+    for lk in links:
+        if lk.get("source_id") in device_ids and lk.get("target_id") in device_ids:
+            port_lbl = ""
+            if lk.get("source_port") or lk.get("target_port"):
+                port_lbl = f"{lk.get('source_port', '')}\u2192{lk.get('target_port', '')}"
+            edges.append({"data": {
+                "id": f"l-{lk['id']}",
+                "source": lk["source_id"],
+                "target": lk["target_id"],
+                "label": port_lbl,
+                "kind": "lldp",
+            }})
     return {"nodes": zone_nodes + nodes, "edges": edges, "zones": zones}
+
+
+# ---------------- TOPOLOGY LINKS (LLDP/CDP neighbor relations) ---------------- #
+
+async def _find_device(did=None, ip=None, name=None):
+    """Resolve a device by id, then ip, then name (first match)."""
+    if did:
+        d = await db.devices.find_one({"id": did}, {"_id": 0})
+        if d:
+            return d
+    if ip:
+        d = await db.devices.find_one({"ip": ip}, {"_id": 0})
+        if d:
+            return d
+    if name:
+        d = await db.devices.find_one({"name": name}, {"_id": 0})
+        if d:
+            return d
+    return None
+
+
+class NeighborLink(BaseModel):
+    """One neighbor relation reported by a collector (from LLDP/CDP).
+
+    Identify each endpoint by id / ip / name (checked in that order). 'source'
+    is the polled switch; 'neighbor' is what it sees on a port.
+    """
+    model_config = ConfigDict(extra="ignore")
+    source_id: Optional[str] = None
+    source_ip: Optional[str] = None
+    source_name: Optional[str] = None
+    neighbor_id: Optional[str] = None
+    neighbor_ip: Optional[str] = None
+    neighbor_name: Optional[str] = None
+    local_port: Optional[str] = None
+    remote_port: Optional[str] = None
+
+
+class LinksPayload(BaseModel):
+    links: List[NeighborLink]
+
+
+@api_router.post("/links")
+async def post_links(payload: LinksPayload):
+    """Upsert neighbor links. Both endpoints are resolved to known devices;
+    unresolved ones are skipped and reported back."""
+    added = 0
+    updated = 0
+    unresolved = []
+    now = datetime.now(timezone.utc).isoformat()
+    for lk in payload.links:
+        src = await _find_device(lk.source_id, lk.source_ip, lk.source_name)
+        dst = await _find_device(lk.neighbor_id, lk.neighbor_ip, lk.neighbor_name)
+        if not src or not dst or src["id"] == dst["id"]:
+            unresolved.append({
+                "source": lk.source_id or lk.source_ip or lk.source_name,
+                "neighbor": lk.neighbor_id or lk.neighbor_ip or lk.neighbor_name,
+            })
+            continue
+        key = {"source_id": src["id"], "target_id": dst["id"]}
+        res = await db.links.update_one(
+            key,
+            {"$set": {**key, "source_port": lk.local_port, "target_port": lk.remote_port, "last_seen": now},
+             "$setOnInsert": {"id": str(uuid.uuid4())}},
+            upsert=True,
+        )
+        if res.upserted_id is not None:
+            added += 1
+        else:
+            updated += 1
+    return {"received": len(payload.links), "added": added, "updated": updated, "unresolved": unresolved}
+
+
+@api_router.get("/links")
+async def list_links():
+    links = await db.links.find({}, {"_id": 0}).to_list(5000)
+    return links
+
+
+@api_router.post("/links/reset")
+async def reset_links():
+    res = await db.links.delete_many({})
+    return {"deleted": res.deleted_count}
 
 
 # Zones list
@@ -477,6 +576,7 @@ async def reset_all():
     await db.devices.delete_many({})
     await db.alerts.delete_many({})
     await db.device_metrics.delete_many({})
+    await db.links.delete_many({})
     return {"status": "cleared"}
 
 
@@ -850,6 +950,7 @@ async def startup():
         await db.device_metrics.create_index("ts_dt", expireAfterSeconds=_METRIC_TTL_SEC)
         await db.device_metrics.create_index([("device_id", 1), ("ts", 1)])
         await db.devices.create_index("ip")  # speed up ingest lookups by IP
+        await db.links.create_index([("source_id", 1), ("target_id", 1)], unique=True)
     except Exception as e:
         logger.warning("index create failed: %s", e)
     # Only auto-seed mock devices in simulation mode

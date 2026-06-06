@@ -5,13 +5,12 @@ import {
   createDevice,
   updateDevice,
   deleteDevice,
-  generateMock,
   resetAll,
 } from "../lib/api";
 import { exportCsv } from "../lib/csv";
 import { StatusDot } from "../components/StatusDot";
 import { MetricChartModal } from "../components/MetricChartModal";
-import { Plus, Pencil, Trash2, Database, Eraser, Search, Download, LineChart as LineIcon } from "lucide-react";
+import { Plus, Pencil, Trash2, Eraser, Search, Download, LineChart as LineIcon } from "lucide-react";
 import { toast } from "sonner";
 
 const TYPES = ["switch", "plc", "hmi", "sensor"];
@@ -206,13 +205,6 @@ export default function Devices() {
             data-testid="devices-export-csv-btn"
           >
             <Download size={14} /> Export CSV
-          </button>
-          <button
-            className="nv-btn"
-            onClick={async () => { await generateMock(); qc.invalidateQueries(); toast.success("Mock data generated"); }}
-            data-testid="devices-generate-mock-btn"
-          >
-            <Database size={14} /> Generate 20
           </button>
           <button
             className="nv-btn nv-btn-danger"

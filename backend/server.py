@@ -337,6 +337,50 @@ async def delete_device(device_id: str):
     return {"deleted": device_id}
 
 
+class CleanupPayload(BaseModel):
+    """Selective cleanup of leftover mock devices, matched by name prefix and/or
+    IP prefix. dry_run=True (default) only previews. Both criteria, when given,
+    must match (conservative) so real discovered devices are not removed."""
+    model_config = ConfigDict(extra="ignore")
+    name_prefixes: List[str] = ["SW-", "PLC-", "SNS-"]
+    ip_prefix: Optional[str] = "10.20."
+    dry_run: bool = True
+
+
+@api_router.post("/devices/cleanup")
+async def cleanup_devices(payload: CleanupPayload):
+    prefixes = [p for p in (payload.name_prefixes or []) if p]
+    ipp = (payload.ip_prefix or "").strip()
+
+    def _matches(d: dict) -> bool:
+        name = d.get("name") or ""
+        ip = d.get("ip") or ""
+        name_ok = any(name.startswith(p) for p in prefixes) if prefixes else None
+        ip_ok = ip.startswith(ipp) if ipp else None
+        checks = [c for c in (name_ok, ip_ok) if c is not None]
+        if not checks:
+            return False
+        return all(checks)
+
+    all_devs = await db.devices.find({}, {"_id": 0}).to_list(100000)
+    matched = [d for d in all_devs if _matches(d)]
+    preview = [{"id": d["id"], "name": d.get("name"), "ip": d.get("ip"),
+                "device_type": d.get("device_type")} for d in matched]
+
+    if payload.dry_run:
+        return {"dry_run": True, "matched": len(matched), "devices": preview}
+
+    ids = [d["id"] for d in matched]
+    if ids:
+        await db.devices.delete_many({"id": {"$in": ids}})
+        await db.devices.update_many({"parent_id": {"$in": ids}}, {"$set": {"parent_id": None}})
+        await db.alerts.delete_many({"device_id": {"$in": ids}})
+        await db.links.delete_many({"$or": [{"source_id": {"$in": ids}}, {"target_id": {"$in": ids}}]})
+        await db.device_kv.delete_many({"device_id": {"$in": ids}})
+        await db.unified_metrics.delete_many({"device_id": {"$in": ids}})
+    return {"dry_run": False, "deleted": len(ids), "devices": preview}
+
+
 # Alerts
 @api_router.get("/alerts", response_model=List[Alert])
 async def list_alerts(limit: int = 200):

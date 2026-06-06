@@ -22,5 +22,11 @@ export const fetchDeviceMetrics = (id, hours = 24) =>
 export const bulkAcknowledgeAlerts = (ids) =>
   api.post(`/alerts/bulk-acknowledge`, { ids }).then((r) => r.data);
 
+// Generic / PLC metrics (UnifiedMetric): latest values + named-metric time-series.
+export const fetchDeviceKv = (id) =>
+  api.get(`/devices/${id}/kv`).then((r) => r.data);
+export const fetchDeviceSeries = (id, metric, hours = 24) =>
+  api.get(`/devices/${id}/series`, { params: { metric, hours } }).then((r) => r.data);
+
 export const generateMock = () => api.post("/mock/generate").then((r) => r.data);
 export const resetAll = () => api.post("/mock/reset").then((r) => r.data);

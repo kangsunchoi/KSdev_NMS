@@ -334,6 +334,7 @@ async def delete_device(device_id: str):
     await db.links.delete_many({"$or": [{"source_id": device_id}, {"target_id": device_id}]})
     await db.device_kv.delete_many({"device_id": device_id})
     await db.unified_metrics.delete_many({"device_id": device_id})
+    await db.device_interfaces.delete_many({"device_id": device_id})
     return {"deleted": device_id}
 
 
@@ -378,6 +379,7 @@ async def cleanup_devices(payload: CleanupPayload):
         await db.links.delete_many({"$or": [{"source_id": {"$in": ids}}, {"target_id": {"$in": ids}}]})
         await db.device_kv.delete_many({"device_id": {"$in": ids}})
         await db.unified_metrics.delete_many({"device_id": {"$in": ids}})
+        await db.device_interfaces.delete_many({"device_id": {"$in": ids}})
     return {"dry_run": False, "deleted": len(ids), "devices": preview}
 
 
@@ -463,6 +465,90 @@ async def discovery_register(payload: DiscoveryRegister):
         "last_message": f"{len(payload.ips)} alive, {created} new",
     }})
     return {"found": len(payload.ips), "created": created, "new_ips": new_ips}
+
+
+# ---------------- INTERFACES (IF-MIB / ifXTable snapshot + bps) ---------------- #
+# The collector posts per-interface counters (ifHCInOctets / ifHCOutOctets etc.);
+# the backend diffs against the previous snapshot to compute in_bps / out_bps.
+
+class IfRow(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    ifindex: int
+    name: Optional[str] = ""
+    oper: Optional[int] = None     # 1=up, 2=down (ifOperStatus)
+    admin: Optional[int] = None
+    speed_mbps: Optional[int] = None
+    in_octets: Optional[float] = None
+    out_octets: Optional[float] = None
+    in_errors: Optional[float] = None
+    out_errors: Optional[float] = None
+
+
+class InterfacesPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    device_id: Optional[str] = None
+    ip: Optional[str] = None
+    name: Optional[str] = None
+    interfaces: List[IfRow] = []
+
+
+@api_router.post("/interfaces")
+async def ingest_interfaces(payload: InterfacesPayload):
+    dev = await _find_device(payload.device_id, payload.ip, payload.name)
+    if not dev:
+        return {"matched": False, "ip": payload.ip}
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    now_epoch = now.timestamp()
+
+    prev = await db.device_interfaces.find_one({"device_id": dev["id"]}, {"_id": 0})
+    prev_map = {}
+    dt = None
+    if prev:
+        for r in prev.get("interfaces", []):
+            prev_map[r.get("ifindex")] = r
+        pe = prev.get("ts_epoch")
+        if pe:
+            dt = now_epoch - pe
+            if dt <= 0:
+                dt = None
+
+    rows = []
+    for r in payload.interfaces:
+        in_bps = None
+        out_bps = None
+        p = prev_map.get(r.ifindex)
+        if dt and p:
+            if r.in_octets is not None and p.get("in_octets") is not None:
+                d = r.in_octets - p["in_octets"]
+                if d >= 0:
+                    in_bps = round((d / dt) * 8, 1)
+            if r.out_octets is not None and p.get("out_octets") is not None:
+                d = r.out_octets - p["out_octets"]
+                if d >= 0:
+                    out_bps = round((d / dt) * 8, 1)
+        rows.append({
+            "ifindex": r.ifindex, "name": r.name or "", "oper": r.oper, "admin": r.admin,
+            "speed_mbps": r.speed_mbps, "in_octets": r.in_octets, "out_octets": r.out_octets,
+            "in_errors": r.in_errors, "out_errors": r.out_errors,
+            "in_bps": in_bps, "out_bps": out_bps,
+        })
+
+    await db.device_interfaces.update_one(
+        {"device_id": dev["id"]},
+        {"$set": {"device_id": dev["id"], "ts": now_iso, "ts_epoch": now_epoch, "interfaces": rows}},
+        upsert=True,
+    )
+    await db.devices.update_one({"id": dev["id"]}, {"$set": {"last_seen": now_iso}})
+    return {"matched": True, "device_id": dev["id"], "count": len(rows), "bps_ready": dt is not None}
+
+
+@api_router.get("/devices/{device_id}/interfaces")
+async def device_interfaces(device_id: str):
+    doc = await db.device_interfaces.find_one({"device_id": device_id}, {"_id": 0})
+    if not doc:
+        return {"device_id": device_id, "ts": None, "interfaces": []}
+    return doc
 
 
 # Alerts
@@ -783,6 +869,7 @@ async def reset_all():
     await db.links.delete_many({})
     await db.device_kv.delete_many({})
     await db.unified_metrics.delete_many({})
+    await db.device_interfaces.delete_many({})
     return {"status": "cleared"}
 
 

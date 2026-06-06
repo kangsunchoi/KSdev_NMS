@@ -10,7 +10,8 @@ import {
 import { exportCsv } from "../lib/csv";
 import { StatusDot } from "../components/StatusDot";
 import { MetricChartModal } from "../components/MetricChartModal";
-import { Plus, Pencil, Trash2, Eraser, Search, Download, LineChart as LineIcon } from "lucide-react";
+import { InterfaceModal } from "../components/InterfaceModal";
+import { Plus, Pencil, Trash2, Eraser, Search, Download, Network, LineChart as LineIcon } from "lucide-react";
 import { toast } from "sonner";
 
 const TYPES = ["switch", "plc", "hmi", "sensor"];
@@ -128,6 +129,7 @@ export default function Devices() {
   const [zoneFilter, setZoneFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [chartDevice, setChartDevice] = useState(null);
+  const [ifDevice, setIfDevice] = useState(null);
 
   const mCreate = useMutation({
     mutationFn: createDevice,
@@ -301,6 +303,14 @@ export default function Devices() {
                     </button>
                     <button
                       className="text-nv-muted hover:text-[#16c79a]"
+                      onClick={() => setIfDevice(d)}
+                      data-testid={`device-interfaces-${d.id}`}
+                      title="Interfaces"
+                    >
+                      <Network size={14} />
+                    </button>
+                    <button
+                      className="text-nv-muted hover:text-[#16c79a]"
                       onClick={() => { setEditing(d); setModalOpen(true); }}
                       data-testid={`device-edit-${d.id}`}
                       title="Edit"
@@ -335,6 +345,10 @@ export default function Devices() {
 
       {chartDevice && (
         <MetricChartModal device={chartDevice} onClose={() => setChartDevice(null)} />
+      )}
+
+      {ifDevice && (
+        <InterfaceModal device={ifDevice} onClose={() => setIfDevice(null)} />
       )}
     </div>
   );

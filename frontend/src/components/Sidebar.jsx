@@ -5,6 +5,7 @@ import {
   Server,
   Network,
   AlertTriangle,
+  Radar,
   ChevronLeft,
   ChevronRight,
   Activity,
@@ -12,6 +13,7 @@ import {
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, testId: "nav-dashboard" },
+  { to: "/discovery", label: "Discovery", icon: Radar, testId: "nav-discovery" },
   { to: "/devices", label: "Devices", icon: Server, testId: "nav-devices" },
   { to: "/topology", label: "Topology", icon: Network, testId: "nav-topology" },
   { to: "/alerts", label: "Alerts", icon: AlertTriangle, testId: "nav-alerts" },

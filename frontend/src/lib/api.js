@@ -30,3 +30,7 @@ export const fetchDeviceSeries = (id, metric, hours = 24) =>
 
 export const generateMock = () => api.post("/mock/generate").then((r) => r.data);
 export const resetAll = () => api.post("/mock/reset").then((r) => r.data);
+
+// Discovery: subnet-sweep settings (collector reads these and registers found devices).
+export const fetchDiscovery = () => api.get("/discovery").then((r) => r.data);
+export const updateDiscovery = (patch) => api.put("/discovery", patch).then((r) => r.data);

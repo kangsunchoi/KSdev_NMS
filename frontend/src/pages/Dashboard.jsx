@@ -1,9 +1,8 @@
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchSummary, fetchAlerts, fetchDevices, generateMock } from "../lib/api";
+import { fetchSummary, fetchAlerts, fetchDevices } from "../lib/api";
 import { StatusDot } from "../components/StatusDot";
-import { Activity, Cpu, AlertOctagon, Gauge, Server, RefreshCw, Database } from "lucide-react";
-import { toast } from "sonner";
+import { Activity, Cpu, AlertOctagon, Gauge, Server, RefreshCw } from "lucide-react";
 
 const KpiTile = ({ label, value, suffix, icon: Icon, accent = "#16c79a", testId, sub }) => (
   <div className="nv-panel p-4" data-testid={testId}>
@@ -28,16 +27,6 @@ export default function Dashboard() {
   const alerts = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts });
   const devices = useQuery({ queryKey: ["devices"], queryFn: fetchDevices });
 
-  const handleGenerate = async () => {
-    try {
-      const r = await generateMock();
-      toast.success(`Seeded ${r.devices_created} devices`);
-      summary.refetch(); alerts.refetch(); devices.refetch();
-    } catch (e) {
-      toast.error("Failed to generate mock data");
-    }
-  };
-
   const s = summary.data || { total: 0, online: 0, critical: 0, open_alerts: 0, health_score: 0, avg_latency_ms: 0, avg_packet_loss: 0, warning: 0 };
   const recentAlerts = (alerts.data || []).slice(0, 8);
   const recentDevices = (devices.data || []).slice(0, 6);
@@ -53,9 +42,6 @@ export default function Dashboard() {
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-nv-muted font-mono tracking-wider">LIVE</span>
           <span className="nv-led nv-led-online animate-led-pulse" />
-          <button className="nv-btn" onClick={handleGenerate} data-testid="dashboard-generate-mock-btn">
-            <Database size={14} /> Seed Mock 20
-          </button>
         </div>
       </div>
 

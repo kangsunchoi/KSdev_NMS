@@ -1,37 +1,85 @@
-import React, { useState } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Brush, Legend,
 } from "recharts";
-import { fetchDeviceMetrics } from "../lib/api";
+import { fetchDeviceMetrics, fetchDeviceKv, fetchDeviceSeries } from "../lib/api";
 import { X } from "lucide-react";
 
 const HOURS = [1, 6, 12, 24];
 
+// Fixed network metrics (served by /devices/{id}/metrics).
+const NETWORK_KEYS = ["latency_ms", "packet_loss", "cpu_pct"];
+const NETWORK_META = {
+  latency_ms: { color: "#16c79a", label: "Latency (ms)", suffix: "ms", short: "Latency" },
+  packet_loss: { color: "#f4d03f", label: "Packet Loss (%)", suffix: "%", short: "Pkt Loss" },
+  cpu_pct: { color: "#a78bfa", label: "CPU (%)", suffix: "%", short: "CPU" },
+};
+// Palette reused for arbitrary named (generic/PLC) metrics.
+const GENERIC_COLORS = ["#16c79a", "#60a5fa", "#f472b6", "#fbbf24", "#34d399", "#c084fc", "#fb923c"];
+
+const fmtTime = (ts) =>
+  new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
 export const MetricChartModal = ({ device, onClose }) => {
   const [hours, setHours] = useState(24);
   const [metric, setMetric] = useState("latency_ms");
-  const { data, isLoading } = useQuery({
-    queryKey: ["metrics", device?.id, hours],
-    queryFn: () => fetchDeviceMetrics(device.id, hours),
+
+  // Latest generic-metric values (PLC registers, OPC UA nodes, etc.).
+  const { data: kvRows = [] } = useQuery({
+    queryKey: ["devkv", device?.id],
+    queryFn: () => fetchDeviceKv(device.id),
     enabled: !!device,
     refetchInterval: 30000,
   });
 
+  const genericKeys = useMemo(
+    () => kvRows.map((r) => r.metric_name).sort(),
+    [kvRows]
+  );
+  const isNetwork = NETWORK_KEYS.includes(metric);
+
+  // If the selected metric disappears (e.g. device change), fall back safely.
+  useEffect(() => {
+    if (!isNetwork && !genericKeys.includes(metric)) {
+      setMetric("latency_ms");
+    }
+  }, [genericKeys, metric, isNetwork]);
+
+  // Chart series: network metrics from /metrics, generic from /series.
+  const { data: chartData, isLoading } = useQuery({
+    queryKey: ["devhist", device?.id, metric, hours, isNetwork],
+    queryFn: () =>
+      isNetwork
+        ? fetchDeviceMetrics(device.id, hours)
+        : fetchDeviceSeries(device.id, metric, hours),
+    enabled: !!device && !!metric,
+    refetchInterval: 30000,
+  });
+
   if (!device) return null;
-  const points = (data?.points || []).map((p) => ({
-    t: new Date(p.ts).getTime(),
-    label: new Date(p.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    latency_ms: p.latency_ms,
-    packet_loss: p.packet_loss,
-    cpu_pct: p.cpu_pct,
+
+  // Normalize both shapes to { label, <valueKey> }.
+  const valueKey = isNetwork ? metric : "value";
+  const points = (chartData?.points || []).map((p) => ({
+    label: fmtTime(p.ts),
+    [valueKey]: isNetwork ? p[metric] : p.value,
   }));
 
-  const metricMeta = {
-    latency_ms: { color: "#16c79a", label: "Latency (ms)", suffix: "ms" },
-    packet_loss: { color: "#f4d03f", label: "Packet Loss (%)", suffix: "%" },
-    cpu_pct: { color: "#a78bfa", label: "CPU (%)", suffix: "%" },
-  }[metric];
+  // Display metadata for the active metric.
+  let meta;
+  if (isNetwork) {
+    meta = NETWORK_META[metric];
+  } else {
+    const idx = genericKeys.indexOf(metric);
+    const unit = (kvRows.find((r) => r.metric_name === metric) || {}).unit || "";
+    meta = {
+      color: GENERIC_COLORS[(idx < 0 ? 0 : idx) % GENERIC_COLORS.length],
+      label: unit ? `${metric} (${unit})` : metric,
+      suffix: unit ? ` ${unit}` : "",
+      short: metric,
+    };
+  }
 
   return (
     <div
@@ -52,6 +100,38 @@ export const MetricChartModal = ({ device, onClose }) => {
           </button>
         </div>
 
+        {/* Latest generic (PLC) values */}
+        {kvRows.length > 0 && (
+          <div className="px-4 py-3 border-b border-nv-border" data-testid="metric-kv-panel">
+            <div className="nv-label mb-2">PLC / Generic — latest values</div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+              {kvRows.map((r) => {
+                const active = metric === r.metric_name;
+                return (
+                  <button
+                    key={r.metric_name}
+                    onClick={() => setMetric(r.metric_name)}
+                    title={`${r.metric_name} — updated ${fmtTime(r.ts)}`}
+                    data-testid={`metric-kv-${r.metric_name}`}
+                    className={`text-left rounded border px-2.5 py-2 transition-colors ${
+                      active
+                        ? "border-nv-accent bg-nv-accent/10"
+                        : "border-nv-border hover:border-nv-accent/60"
+                    }`}
+                  >
+                    <div className="nv-label truncate">{r.metric_name}</div>
+                    <div className="font-mono text-[15px] text-nv-text mt-0.5">
+                      {r.value}
+                      {r.unit ? <span className="text-nv-muted text-[11px] ml-1">{r.unit}</span> : null}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Controls: time range + metric selector (network + generic) */}
         <div className="px-4 py-2 border-b border-nv-border flex items-center gap-2 flex-wrap">
           <span className="nv-label mr-1">Range:</span>
           {HOURS.map((h) => (
@@ -65,18 +145,24 @@ export const MetricChartModal = ({ device, onClose }) => {
             </button>
           ))}
           <span className="nv-label ml-4 mr-1">Metric:</span>
-          {Object.entries({
-            latency_ms: "Latency",
-            packet_loss: "Pkt Loss",
-            cpu_pct: "CPU",
-          }).map(([k, l]) => (
+          {NETWORK_KEYS.map((k) => (
             <button
               key={k}
               onClick={() => setMetric(k)}
               className={`nv-btn ${metric === k ? "nv-btn-primary" : ""}`}
               data-testid={`metric-key-${k}`}
             >
-              {l}
+              {NETWORK_META[k].short}
+            </button>
+          ))}
+          {genericKeys.map((k) => (
+            <button
+              key={k}
+              onClick={() => setMetric(k)}
+              className={`nv-btn ${metric === k ? "nv-btn-primary" : ""}`}
+              data-testid={`metric-key-${k}`}
+            >
+              {k}
             </button>
           ))}
           <span className="ml-auto font-mono text-[11px] text-nv-muted">
@@ -84,10 +170,13 @@ export const MetricChartModal = ({ device, onClose }) => {
           </span>
         </div>
 
+        {/* Chart */}
         <div className="p-4 h-[380px]" data-testid="metric-chart-container">
           {points.length === 0 ? (
             <div className="h-full flex items-center justify-center text-nv-muted font-mono text-[12px]">
-              NO DATA YET — metrics sample every 60 seconds
+              {isNetwork
+                ? "NO DATA YET — network metrics sample every 60 seconds"
+                : "NO DATA YET — generic metrics arrive via /api/metrics (Modbus/OPC UA)"}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
@@ -115,17 +204,17 @@ export const MetricChartModal = ({ device, onClose }) => {
                     fontSize: 11,
                   }}
                   labelStyle={{ color: "#94a3b8" }}
-                  formatter={(v) => [`${v}${metricMeta.suffix}`, metricMeta.label]}
+                  formatter={(v) => [`${v}${meta.suffix}`, meta.label]}
                 />
                 <Legend wrapperStyle={{ fontSize: 11, fontFamily: "Inter", color: "#94a3b8" }} />
                 <Line
                   type="monotone"
-                  dataKey={metric}
-                  stroke={metricMeta.color}
+                  dataKey={valueKey}
+                  stroke={meta.color}
                   strokeWidth={1.6}
                   dot={false}
                   isAnimationActive={false}
-                  name={metricMeta.label}
+                  name={meta.label}
                 />
                 <Brush
                   dataKey="label"

@@ -10,6 +10,26 @@ import Alerts from "@/pages/Alerts";
 import Settings from "@/pages/Settings";
 import Login from "@/pages/Login";
 import { fetchAuthConfig, getToken } from "@/lib/auth";
+import { I18nProvider } from "@/lib/i18n";
+
+function AppShell() {
+  return (
+    <div className="App">
+      <BrowserRouter>
+        <Layout>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/discovery" element={<Discovery />} />
+            <Route path="/devices" element={<Devices />} />
+            <Route path="/topology" element={<Topology />} />
+            <Route path="/alerts" element={<Alerts />} />
+            <Route path="/settings" element={<Settings />} />
+          </Routes>
+        </Layout>
+      </BrowserRouter>
+    </div>
+  );
+}
 
 function App() {
   const [ready, setReady] = useState(false);
@@ -43,34 +63,20 @@ function App() {
     };
   }, []);
 
+  let content;
   if (!ready) {
-    return (
+    content = (
       <div className="min-h-screen bg-nv-bg text-nv-muted flex items-center justify-center font-mono text-[12px]">
         Loading…
       </div>
     );
+  } else if (authEnabled && !authed) {
+    content = <Login onSuccess={() => setAuthed(true)} />;
+  } else {
+    content = <AppShell />;
   }
 
-  if (authEnabled && !authed) {
-    return <Login onSuccess={() => setAuthed(true)} />;
-  }
-
-  return (
-    <div className="App">
-      <BrowserRouter>
-        <Layout>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/discovery" element={<Discovery />} />
-            <Route path="/devices" element={<Devices />} />
-            <Route path="/topology" element={<Topology />} />
-            <Route path="/alerts" element={<Alerts />} />
-            <Route path="/settings" element={<Settings />} />
-          </Routes>
-        </Layout>
-      </BrowserRouter>
-    </div>
-  );
+  return <I18nProvider>{content}</I18nProvider>;
 }
 
 export default App;

@@ -1,6 +1,7 @@
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchDeviceInterfaces } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 import { X } from "lucide-react";
 
 // bits/sec -> human readable
@@ -32,6 +33,7 @@ const OperBadge = ({ oper }) => {
 };
 
 export const InterfaceModal = ({ device, onClose }) => {
+  const { t } = useI18n();
   const { data, isLoading } = useQuery({
     queryKey: ["interfaces", device?.id],
     queryFn: () => fetchDeviceInterfaces(device.id),
@@ -53,7 +55,7 @@ export const InterfaceModal = ({ device, onClose }) => {
       <div className="nv-panel w-[960px] max-w-full max-h-[88vh] flex flex-col">
         <div className="px-4 py-3 border-b border-nv-border flex items-center justify-between">
           <div>
-            <div className="nv-section-title">Interfaces</div>
+            <div className="nv-section-title">{t("modal.interfaces")}</div>
             <div className="font-mono text-[14px] text-nv-text mt-0.5">
               {device.name} <span className="text-nv-muted">/ {device.ip}</span>
             </div>
@@ -65,25 +67,25 @@ export const InterfaceModal = ({ device, onClose }) => {
 
         <div className="px-4 py-2 border-b border-nv-border flex items-center gap-3">
           <span className="font-mono text-[11px] text-nv-muted">
-            {rows.length} ports {ts ? `· updated ${ts}` : ""} {isLoading ? "· loading" : ""}
+            {rows.length} ports {ts ? `· ${t("modal.updated")} ${ts}` : ""} {isLoading ? `· ${t("modal.loading")}` : ""}
           </span>
         </div>
 
         <div className="overflow-auto p-2">
           {rows.length === 0 ? (
             <div className="h-[200px] flex items-center justify-center text-nv-muted font-mono text-[12px]">
-              NO INTERFACE DATA — collected via SNMP every ~30s. bps appears after the 2nd poll.
+              {t("modal.noIfData")}
             </div>
           ) : (
             <table className="w-full text-[12px]">
               <thead>
                 <tr className="text-nv-muted font-mono text-[11px] uppercase tracking-wider border-b border-nv-border">
-                  <th className="text-left px-3 py-2">Interface</th>
-                  <th className="text-left px-3 py-2">Status</th>
-                  <th className="text-right px-3 py-2">Speed</th>
-                  <th className="text-right px-3 py-2">In</th>
-                  <th className="text-right px-3 py-2">Out</th>
-                  <th className="text-right px-3 py-2">Err In/Out</th>
+                  <th className="text-left px-3 py-2">{t("modal.colInterface")}</th>
+                  <th className="text-left px-3 py-2">{t("modal.colStatus")}</th>
+                  <th className="text-right px-3 py-2">{t("modal.colSpeed")}</th>
+                  <th className="text-right px-3 py-2">{t("modal.colIn")}</th>
+                  <th className="text-right px-3 py-2">{t("modal.colOut")}</th>
+                  <th className="text-right px-3 py-2">{t("modal.colErr")}</th>
                 </tr>
               </thead>
               <tbody>

@@ -2,6 +2,7 @@ import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchSummary, fetchAlerts, fetchDevices } from "../lib/api";
 import { StatusDot } from "../components/StatusDot";
+import { useI18n } from "../lib/i18n";
 import { Activity, Cpu, AlertOctagon, Gauge, Server, RefreshCw } from "lucide-react";
 
 const KpiTile = ({ label, value, suffix, icon: Icon, accent = "#16c79a", testId, sub }) => (
@@ -23,6 +24,7 @@ const SeverityText = ({ s }) => (
 );
 
 export default function Dashboard() {
+  const { t } = useI18n();
   const summary = useQuery({ queryKey: ["summary"], queryFn: fetchSummary });
   const alerts = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts });
   const devices = useQuery({ queryKey: ["devices"], queryFn: fetchDevices });
@@ -36,27 +38,27 @@ export default function Dashboard() {
       {/* Header */}
       <div className="flex items-center justify-between mb-5">
         <div>
-          <div className="text-[11px] tracking-[0.2em] text-nv-muted uppercase font-mono">Control Room</div>
-          <h1 className="text-[22px] font-semibold tracking-tight">Operations Overview</h1>
+          <div className="text-[11px] tracking-[0.2em] text-nv-muted uppercase font-mono">{t("dash.controlRoom")}</div>
+          <h1 className="text-[22px] font-semibold tracking-tight">{t("dash.title")}</h1>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[11px] text-nv-muted font-mono tracking-wider">LIVE</span>
+          <span className="text-[11px] text-nv-muted font-mono tracking-wider">{t("dash.live")}</span>
           <span className="nv-led nv-led-online animate-led-pulse" />
         </div>
       </div>
 
       {/* KPI grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-        <KpiTile label="Total Devices" value={s.total} icon={Server} testId="kpi-total-devices" sub={`${s.online} online · ${s.warning} warn`} />
-        <KpiTile label="Online" value={s.online} suffix={`/ ${s.total}`} icon={Activity} testId="kpi-online" accent="#16c79a" sub={s.total ? `${Math.round((s.online / s.total) * 100)}% reachable` : "—"} />
-        <KpiTile label="Critical Alerts" value={s.critical_alerts ?? 0} icon={AlertOctagon} accent="#e74c3c" testId="kpi-critical-alerts" sub={`${s.open_alerts ?? 0} open total`} />
-        <KpiTile label="Health Score" value={s.health_score} suffix="/ 100" icon={Gauge} accent="#16c79a" testId="kpi-health-score" sub={`avg latency ${s.avg_latency_ms}ms`} />
+        <KpiTile label={t("dash.totalDevices")} value={s.total} icon={Server} testId="kpi-total-devices" sub={`${s.online} online · ${s.warning} warn`} />
+        <KpiTile label={t("dash.online")} value={s.online} suffix={`/ ${s.total}`} icon={Activity} testId="kpi-online" accent="#16c79a" sub={s.total ? `${Math.round((s.online / s.total) * 100)}% reachable` : "—"} />
+        <KpiTile label={t("dash.criticalAlerts")} value={s.critical_alerts ?? 0} icon={AlertOctagon} accent="#e74c3c" testId="kpi-critical-alerts" sub={`${s.open_alerts ?? 0} open total`} />
+        <KpiTile label={t("dash.healthScore")} value={s.health_score} suffix="/ 100" icon={Gauge} accent="#16c79a" testId="kpi-health-score" sub={`avg latency ${s.avg_latency_ms}ms`} />
       </div>
 
       {/* Health bar */}
       <div className="nv-panel p-4 mb-4" data-testid="network-health-panel">
         <div className="flex items-center justify-between mb-2">
-          <span className="nv-label">Network Health</span>
+          <span className="nv-label">{t("dash.networkHealth")}</span>
           <span className="font-mono text-[12px] text-nv-text">{s.health_score}/100</span>
         </div>
         <div className="nv-health-track">
@@ -70,9 +72,9 @@ export default function Dashboard() {
           />
         </div>
         <div className="grid grid-cols-3 gap-4 mt-3 text-[11px] font-mono">
-          <div><span className="text-nv-muted uppercase">Latency:</span> <span className="text-nv-text">{s.avg_latency_ms}ms</span></div>
-          <div><span className="text-nv-muted uppercase">Packet Loss:</span> <span className="text-nv-text">{s.avg_packet_loss}%</span></div>
-          <div><span className="text-nv-muted uppercase">Open Alerts:</span> <span className="text-[#e74c3c]">{s.open_alerts}</span></div>
+          <div><span className="text-nv-muted uppercase">{t("dash.latency")}:</span> <span className="text-nv-text">{s.avg_latency_ms}ms</span></div>
+          <div><span className="text-nv-muted uppercase">{t("dash.packetLoss")}:</span> <span className="text-nv-text">{s.avg_packet_loss}%</span></div>
+          <div><span className="text-nv-muted uppercase">{t("dash.openAlerts")}:</span> <span className="text-[#e74c3c]">{s.open_alerts}</span></div>
         </div>
       </div>
 
@@ -80,12 +82,12 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <div className="nv-panel lg:col-span-2" data-testid="alert-feed-panel">
           <div className="flex items-center justify-between px-4 py-3 border-b border-nv-border">
-            <span className="nv-section-title">Live Alert Feed</span>
+            <span className="nv-section-title">{t("dash.alertFeed")}</span>
             <RefreshCw size={12} className="text-nv-muted" />
           </div>
           <div className="divide-y divide-[#1f2a44]">
             {recentAlerts.length === 0 ? (
-              <div className="px-4 py-10 text-center text-[12px] text-nv-muted font-mono">NO ACTIVE ALERTS</div>
+              <div className="px-4 py-10 text-center text-[12px] text-nv-muted font-mono">{t("dash.noAlerts")}</div>
             ) : (
               recentAlerts.map((a) => (
                 <div key={a.id} className="px-4 py-2 flex items-center gap-3" data-testid={`alert-feed-item-${a.id}`}>
@@ -104,7 +106,7 @@ export default function Dashboard() {
 
         <div className="nv-panel" data-testid="recent-devices-panel">
           <div className="px-4 py-3 border-b border-nv-border">
-            <span className="nv-section-title">Device Pulse</span>
+            <span className="nv-section-title">{t("dash.devicePulse")}</span>
           </div>
           <div>
             {recentDevices.map((d) => (
@@ -117,7 +119,7 @@ export default function Dashboard() {
               </div>
             ))}
             {recentDevices.length === 0 && (
-              <div className="px-4 py-10 text-center text-[12px] text-nv-muted font-mono">NO DEVICES</div>
+              <div className="px-4 py-10 text-center text-[12px] text-nv-muted font-mono">{t("dash.noDevices")}</div>
             )}
           </div>
         </div>

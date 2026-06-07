@@ -5,6 +5,7 @@ import { fetchTopology } from "../lib/api";
 import { api } from "../lib/api";
 import { StatusDot } from "../components/StatusDot";
 import { X, ChevronDown, ChevronRight, Boxes } from "lucide-react";
+import { useI18n } from "../lib/i18n";
 
 const STATUS_COLOR = {
   online: "#16c79a",
@@ -32,6 +33,7 @@ const TYPE_BASE = {
 };
 
 export default function Topology() {
+  const { t } = useI18n();
   const { data, isLoading } = useQuery({
     queryKey: ["topology"],
     queryFn: fetchTopology,
@@ -216,8 +218,8 @@ export default function Topology() {
     <div className="p-6 flex flex-col h-screen" data-testid="topology-page">
       <div className="flex items-center justify-between mb-3">
         <div>
-          <div className="text-[11px] tracking-[0.2em] text-nv-muted uppercase font-mono">Network Map</div>
-          <h1 className="text-[22px] font-semibold tracking-tight">Topology Viewer</h1>
+          <div className="text-[11px] tracking-[0.2em] text-nv-muted uppercase font-mono">{t("topo.networkMap")}</div>
+          <h1 className="text-[22px] font-semibold tracking-tight">{t("topo.title")}</h1>
         </div>
         <div className="flex items-center gap-4 text-[11px] font-mono">
           <Legend />
@@ -229,7 +231,7 @@ export default function Topology() {
         <div className="nv-panel w-[200px] flex-shrink-0" data-testid="topology-zones-panel">
           <div className="px-3 py-2 border-b border-nv-border flex items-center gap-2">
             <Boxes size={14} className="text-[#16c79a]" />
-            <span className="nv-section-title">Zones</span>
+            <span className="nv-section-title">{t("topo.zones")}</span>
           </div>
           <div>
             {zones.map((z) => {
@@ -256,7 +258,7 @@ export default function Topology() {
               );
             })}
             {zones.length === 0 && (
-              <div className="px-3 py-4 text-[11px] text-nv-muted font-mono text-center">NO ZONES</div>
+              <div className="px-3 py-4 text-[11px] text-nv-muted font-mono text-center">{t("topo.noZones")}</div>
             )}
             <div className="px-3 py-2 border-t border-nv-border flex gap-2">
               <button
@@ -264,14 +266,14 @@ export default function Topology() {
                 onClick={() => setCollapsedZones(new Set())}
                 data-testid="topology-expand-all"
               >
-                EXPAND ALL
+                {t("topo.expandAll")}
               </button>
               <button
                 className="nv-btn flex-1 justify-center"
                 onClick={() => setCollapsedZones(new Set(zones))}
                 data-testid="topology-collapse-all"
               >
-                COLLAPSE ALL
+                {t("topo.collapseAll")}
               </button>
             </div>
           </div>
@@ -291,7 +293,7 @@ export default function Topology() {
               />
             )}
             {!isLoading && elements.length === 0 && (
-              <div className="h-full flex items-center justify-center text-nv-muted text-[12px] font-mono">NO TOPOLOGY DATA</div>
+              <div className="h-full flex items-center justify-center text-nv-muted text-[12px] font-mono">{t("topo.noData")}</div>
             )}
           </div>
         </div>
@@ -299,7 +301,7 @@ export default function Topology() {
         {selected && (
           <div className="nv-panel w-[320px] flex-shrink-0" data-testid="topology-side-panel">
             <div className="px-4 py-3 border-b border-nv-border flex items-center justify-between">
-              <span className="nv-section-title">Node Details</span>
+              <span className="nv-section-title">{t("topo.nodeDetails")}</span>
               <button onClick={() => setSelected(null)} className="text-nv-muted hover:text-white" data-testid="topology-close-panel">
                 <X size={14} />
               </button>
@@ -309,14 +311,14 @@ export default function Topology() {
                 <>
                   <div>
                     <div className="font-mono text-[14px] text-nv-text">{selected.label}</div>
-                    <div className="text-[11px] uppercase tracking-wider text-nv-muted">Unmanaged Segment</div>
+                    <div className="text-[11px] uppercase tracking-wider text-nv-muted">{t("topo.unmanagedSegment")}</div>
                   </div>
                   <div className="grid grid-cols-2 gap-y-2 text-[12px]">
-                    <div className="nv-label">Switch Port</div><div className="font-mono text-[#16c79a]">{selected.port}</div>
-                    <div className="nv-label">Hosts</div><div className="font-mono">{selected.mac_count}</div>
+                    <div className="nv-label">{t("topo.switchPort")}</div><div className="font-mono text-[#16c79a]">{selected.port}</div>
+                    <div className="nv-label">{t("topo.hosts")}</div><div className="font-mono">{selected.mac_count}</div>
                   </div>
                   <div>
-                    <div className="nv-label mb-1">MAC Addresses</div>
+                    <div className="nv-label mb-1">{t("topo.macAddresses")}</div>
                     <div className="space-y-1 max-h-[220px] overflow-auto">
                       {(selected.macs || []).map((m) => (
                         <div key={m} className="font-mono text-[11px] text-nv-text">{m}</div>
@@ -328,11 +330,11 @@ export default function Topology() {
                 <>
                   <div>
                     <div className="font-mono text-[14px] text-nv-text">{selected.label}</div>
-                    <div className="text-[11px] uppercase tracking-wider text-nv-muted">Logical Asset</div>
+                    <div className="text-[11px] uppercase tracking-wider text-nv-muted">{t("topo.logicalAsset")}</div>
                   </div>
                   <div className="grid grid-cols-2 gap-y-2 text-[12px]">
-                    <div className="nv-label">Type</div><div className="font-mono text-[#0e7490]">{selected.asset_type}</div>
-                    <div className="nv-label">Detail</div><div className="font-mono">{selected.detail || "—"}</div>
+                    <div className="nv-label">{t("topo.type")}</div><div className="font-mono text-[#0e7490]">{selected.asset_type}</div>
+                    <div className="nv-label">{t("topo.detail")}</div><div className="font-mono">{selected.detail || "—"}</div>
                   </div>
                 </>
               ) : (
@@ -345,12 +347,12 @@ export default function Topology() {
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-y-2 text-[12px]">
-                    <div className="nv-label">IP</div><div className="font-mono text-[#16c79a]">{selected.ip}</div>
-                    <div className="nv-label">Zone</div><div className="font-mono">{selected.zone || "—"}</div>
-                    <div className="nv-label">Vendor</div><div className="font-mono">{selected.vendor}</div>
-                    <div className="nv-label">Model</div><div className="font-mono">{selected.model}</div>
-                    <div className="nv-label">Protocol</div><div className="font-mono">{selected.protocol}</div>
-                    <div className="nv-label">Status</div><div className="font-mono uppercase">{selected.status}</div>
+                    <div className="nv-label">{t("topo.ip")}</div><div className="font-mono text-[#16c79a]">{selected.ip}</div>
+                    <div className="nv-label">{t("topo.zone")}</div><div className="font-mono">{selected.zone || "—"}</div>
+                    <div className="nv-label">{t("topo.vendor")}</div><div className="font-mono">{selected.vendor}</div>
+                    <div className="nv-label">{t("topo.model")}</div><div className="font-mono">{selected.model}</div>
+                    <div className="nv-label">{t("topo.protocol")}</div><div className="font-mono">{selected.protocol}</div>
+                    <div className="nv-label">{t("topo.status")}</div><div className="font-mono uppercase">{selected.status}</div>
                   </div>
                 </>
               )}

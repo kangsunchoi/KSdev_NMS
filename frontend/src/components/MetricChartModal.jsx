@@ -4,6 +4,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Brush, Legend,
 } from "recharts";
 import { fetchDeviceMetrics, fetchDeviceKv, fetchDeviceSeries } from "../lib/api";
+import { useI18n } from "../lib/i18n";
 import { X } from "lucide-react";
 
 const HOURS = [1, 6, 12, 24];
@@ -22,6 +23,7 @@ const fmtTime = (ts) =>
   new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 export const MetricChartModal = ({ device, onClose }) => {
+  const { t } = useI18n();
   const [hours, setHours] = useState(24);
   const [metric, setMetric] = useState("latency_ms");
 
@@ -90,7 +92,7 @@ export const MetricChartModal = ({ device, onClose }) => {
       <div className="nv-panel w-[920px] max-w-full">
         <div className="px-4 py-3 border-b border-nv-border flex items-center justify-between">
           <div>
-            <div className="nv-section-title">Device History</div>
+            <div className="nv-section-title">{t("modal.deviceHistory")}</div>
             <div className="font-mono text-[14px] text-nv-text mt-0.5">
               {device.name} <span className="text-nv-muted">/ {device.ip}</span>
             </div>
@@ -103,7 +105,7 @@ export const MetricChartModal = ({ device, onClose }) => {
         {/* Latest generic (PLC) values */}
         {kvRows.length > 0 && (
           <div className="px-4 py-3 border-b border-nv-border" data-testid="metric-kv-panel">
-            <div className="nv-label mb-2">PLC / Generic — latest values</div>
+            <div className="nv-label mb-2">{t("modal.plcLatest")}</div>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
               {kvRows.map((r) => {
                 const active = metric === r.metric_name;
@@ -133,7 +135,7 @@ export const MetricChartModal = ({ device, onClose }) => {
 
         {/* Controls: time range + metric selector (network + generic) */}
         <div className="px-4 py-2 border-b border-nv-border flex items-center gap-2 flex-wrap">
-          <span className="nv-label mr-1">Range:</span>
+          <span className="nv-label mr-1">{t("modal.range")}:</span>
           {HOURS.map((h) => (
             <button
               key={h}
@@ -144,7 +146,7 @@ export const MetricChartModal = ({ device, onClose }) => {
               {h}H
             </button>
           ))}
-          <span className="nv-label ml-4 mr-1">Metric:</span>
+          <span className="nv-label ml-4 mr-1">{t("modal.metric")}:</span>
           {NETWORK_KEYS.map((k) => (
             <button
               key={k}
@@ -166,7 +168,7 @@ export const MetricChartModal = ({ device, onClose }) => {
             </button>
           ))}
           <span className="ml-auto font-mono text-[11px] text-nv-muted">
-            {points.length} pts {isLoading ? "· loading" : ""}
+            {points.length} pts {isLoading ? `· ${t("modal.loading")}` : ""}
           </span>
         </div>
 
@@ -175,8 +177,8 @@ export const MetricChartModal = ({ device, onClose }) => {
           {points.length === 0 ? (
             <div className="h-full flex items-center justify-center text-nv-muted font-mono text-[12px]">
               {isNetwork
-                ? "NO DATA YET — network metrics sample every 60 seconds"
-                : "NO DATA YET — generic metrics arrive via /api/metrics (Modbus/OPC UA)"}
+                ? t("modal.noDataNet")
+                : t("modal.noDataGeneric")}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">

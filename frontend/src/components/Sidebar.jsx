@@ -9,7 +9,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Activity,
+  LogOut,
+  Settings as SettingsIcon,
 } from "lucide-react";
+import { getUser, clearSession } from "../lib/auth";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, testId: "nav-dashboard" },
@@ -17,6 +20,7 @@ const NAV = [
   { to: "/devices", label: "Devices", icon: Server, testId: "nav-devices" },
   { to: "/topology", label: "Topology", icon: Network, testId: "nav-topology" },
   { to: "/alerts", label: "Alerts", icon: AlertTriangle, testId: "nav-alerts" },
+  { to: "/settings", label: "Settings", icon: SettingsIcon, testId: "nav-settings" },
 ];
 
 export const Sidebar = () => {
@@ -55,6 +59,27 @@ export const Sidebar = () => {
           </NavLink>
         ))}
       </nav>
+
+      {window.__nvAuthEnabled && getUser() && (
+        <div className="border-t border-nv-border px-3 py-2" data-testid="sidebar-user">
+          {!collapsed && (
+            <div className="mb-1.5 leading-tight">
+              <div className="text-[12px] text-nv-text font-mono truncate">{getUser().username}</div>
+              <div className="text-[10px] text-nv-muted uppercase tracking-wider">{getUser().role}</div>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => { clearSession(); window.location.reload(); }}
+            className="flex items-center gap-2 text-nv-muted hover:text-[#e74c3c] transition-colors text-[12px]"
+            data-testid="logout-btn"
+            title="Sign out"
+          >
+            <LogOut size={16} />
+            {!collapsed && <span>Sign out</span>}
+          </button>
+        </div>
+      )}
 
       <button
         type="button"

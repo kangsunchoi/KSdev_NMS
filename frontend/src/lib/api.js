@@ -5,6 +5,28 @@ export const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({ baseURL: API });
 
+// Attach the bearer token (if any) to every request. When auth is disabled
+// there is no token, so requests go out exactly as before.
+api.interceptors.request.use((config) => {
+  const t = localStorage.getItem("nv_token");
+  if (t) config.headers.Authorization = `Bearer ${t}`;
+  return config;
+});
+
+// On 401 (expired/invalid token), drop the session and let App route to login.
+// Guarded by window.__nvAuthEnabled so it stays inert when auth is off.
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    if (err?.response?.status === 401 && window.__nvAuthEnabled) {
+      localStorage.removeItem("nv_token");
+      localStorage.removeItem("nv_user");
+      window.dispatchEvent(new Event("nv-unauthorized"));
+    }
+    return Promise.reject(err);
+  }
+);
+
 export const fetchDevices = () => api.get("/devices").then((r) => r.data);
 export const createDevice = (payload) => api.post("/devices", payload).then((r) => r.data);
 export const updateDevice = (id, payload) => api.patch(`/devices/${id}`, payload).then((r) => r.data);
@@ -15,6 +37,16 @@ export const acknowledgeAlert = (id) => api.post(`/alerts/${id}/acknowledge`).th
 export const deleteAlert = (id) => api.delete(`/alerts/${id}`).then((r) => r.data);
 
 export const fetchTopology = () => api.get("/topology").then((r) => r.data);
+
+// Settings: user management (admin) + audit log
+export const fetchUsers = () => api.get("/auth/users").then((r) => r.data);
+export const createUser = (payload) => api.post("/auth/users", payload).then((r) => r.data);
+export const updateUser = (username, payload) =>
+  api.patch(`/auth/users/${username}`, payload).then((r) => r.data);
+export const deleteUser = (username) =>
+  api.delete(`/auth/users/${username}`).then((r) => r.data);
+export const fetchAudit = (limit = 200) =>
+  api.get(`/audit?limit=${limit}`).then((r) => r.data);
 export const fetchSummary = () => api.get("/dashboard/summary").then((r) => r.data);
 
 export const fetchDeviceMetrics = (id, hours = 24) =>

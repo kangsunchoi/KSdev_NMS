@@ -18,6 +18,8 @@ const TYPE_SHAPE = {
   plc: "hexagon",
   hmi: "diamond",
   sensor: "ellipse",
+  unmanaged_segment: "round-rectangle",
+  asset: "round-rectangle",
 };
 
 const TYPE_BASE = {
@@ -25,12 +27,15 @@ const TYPE_BASE = {
   plc: "#16c79a",
   hmi: "#a78bfa",
   sensor: "#94a3b8",
+  unmanaged_segment: "#475569",
+  asset: "#0e7490",
 };
 
 export default function Topology() {
   const { data, isLoading } = useQuery({
     queryKey: ["topology"],
     queryFn: fetchTopology,
+    refetchInterval: 10000,
   });
   const { data: zoneStats = [] } = useQuery({
     queryKey: ["zones"],
@@ -53,7 +58,7 @@ export default function Topology() {
       data: {
         ...n.data,
         bg: TYPE_BASE[n.data.type] || "#94a3b8",
-        border: STATUS_COLOR[n.data.status] || "#94a3b8",
+        border: STATUS_COLOR[n.data.status] || TYPE_BASE[n.data.type] || "#94a3b8",
         shape: TYPE_SHAPE[n.data.type] || "ellipse",
       },
     }));
@@ -181,6 +186,30 @@ export default function Topology() {
         "curve-style": "bezier",
       },
     },
+    {
+      selector: "edge[kind = 'unmanaged']",
+      style: { "line-style": "dashed", "line-color": "#64748b", "target-arrow-shape": "none" },
+    },
+    {
+      selector: "edge[kind = 'asset']",
+      style: { "line-style": "dotted", "line-color": "#0e7490", width: 1 },
+    },
+    {
+      selector: "node[?is_segment]",
+      style: {
+        "background-opacity": 0.3,
+        "border-style": "dashed",
+        "border-color": "#94a3b8",
+        shape: "round-rectangle",
+        width: 54,
+        height: 34,
+        "font-size": 9,
+      },
+    },
+    {
+      selector: "node[?is_asset]",
+      style: { width: 24, height: 24, "font-size": 9 },
+    },
   ];
 
   return (
@@ -276,21 +305,55 @@ export default function Topology() {
               </button>
             </div>
             <div className="p-4 space-y-3">
-              <div className="flex items-center gap-3">
-                <StatusDot status={selected.status} pulse={selected.status !== "online"} />
-                <div>
-                  <div className="font-mono text-[14px] text-nv-text">{selected.label}</div>
-                  <div className="text-[11px] uppercase tracking-wider text-nv-muted">{selected.type}</div>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-y-2 text-[12px]">
-                <div className="nv-label">IP</div><div className="font-mono text-[#16c79a]">{selected.ip}</div>
-                <div className="nv-label">Zone</div><div className="font-mono">{selected.zone || "—"}</div>
-                <div className="nv-label">Vendor</div><div className="font-mono">{selected.vendor}</div>
-                <div className="nv-label">Model</div><div className="font-mono">{selected.model}</div>
-                <div className="nv-label">Protocol</div><div className="font-mono">{selected.protocol}</div>
-                <div className="nv-label">Status</div><div className="font-mono uppercase">{selected.status}</div>
-              </div>
+              {selected.is_segment ? (
+                <>
+                  <div>
+                    <div className="font-mono text-[14px] text-nv-text">{selected.label}</div>
+                    <div className="text-[11px] uppercase tracking-wider text-nv-muted">Unmanaged Segment</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-y-2 text-[12px]">
+                    <div className="nv-label">Switch Port</div><div className="font-mono text-[#16c79a]">{selected.port}</div>
+                    <div className="nv-label">Hosts</div><div className="font-mono">{selected.mac_count}</div>
+                  </div>
+                  <div>
+                    <div className="nv-label mb-1">MAC Addresses</div>
+                    <div className="space-y-1 max-h-[220px] overflow-auto">
+                      {(selected.macs || []).map((m) => (
+                        <div key={m} className="font-mono text-[11px] text-nv-text">{m}</div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : selected.is_asset ? (
+                <>
+                  <div>
+                    <div className="font-mono text-[14px] text-nv-text">{selected.label}</div>
+                    <div className="text-[11px] uppercase tracking-wider text-nv-muted">Logical Asset</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-y-2 text-[12px]">
+                    <div className="nv-label">Type</div><div className="font-mono text-[#0e7490]">{selected.asset_type}</div>
+                    <div className="nv-label">Detail</div><div className="font-mono">{selected.detail || "—"}</div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center gap-3">
+                    <StatusDot status={selected.status} pulse={selected.status !== "online"} />
+                    <div>
+                      <div className="font-mono text-[14px] text-nv-text">{selected.label}</div>
+                      <div className="text-[11px] uppercase tracking-wider text-nv-muted">{selected.type}</div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-y-2 text-[12px]">
+                    <div className="nv-label">IP</div><div className="font-mono text-[#16c79a]">{selected.ip}</div>
+                    <div className="nv-label">Zone</div><div className="font-mono">{selected.zone || "—"}</div>
+                    <div className="nv-label">Vendor</div><div className="font-mono">{selected.vendor}</div>
+                    <div className="nv-label">Model</div><div className="font-mono">{selected.model}</div>
+                    <div className="nv-label">Protocol</div><div className="font-mono">{selected.protocol}</div>
+                    <div className="nv-label">Status</div><div className="font-mono uppercase">{selected.status}</div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -307,5 +370,7 @@ const Legend = () => (
     <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-[#16c79a] inline-block" style={{clipPath:"polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%)"}} /> PLC</span>
     <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-[#a78bfa] inline-block rotate-45" /> HMI</span>
     <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-[#94a3b8] inline-block rounded-full" /> SENSOR</span>
+    <span className="flex items-center gap-1.5"><span className="w-3 h-2 bg-[#475569] inline-block border border-dashed border-[#94a3b8]" /> SEGMENT</span>
+    <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-[#0e7490] inline-block" /> ASSET</span>
   </div>
 );

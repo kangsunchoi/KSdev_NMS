@@ -17,6 +17,21 @@ from datetime import datetime, timezone, timedelta
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
+# These modules read environment variables at import time, so they MUST be
+# imported AFTER load_dotenv() above.
+import auth      # noqa: E402  (authentication / RBAC / audit middleware)
+import audit     # noqa: E402  (audit trail)
+import notify    # noqa: E402  (Slack/Telegram alert notifications)
+
+# Alert correlation (RCA) toggle — default ON. Purely additive: it only annotates
+# alerts with the parent device id when the parent is already down; it never
+# suppresses or changes existing alert creation.
+RCA_ENABLED = str(os.environ.get("RCA_ENABLED", "true")).strip().lower() in ("1", "true", "yes", "on")
+
+# Topology: a switch port carrying this many MACs with NO LLDP/CDP neighbor is
+# treated as an "unmanaged segment" (a dumb hub or daisy-chain). Default 2.
+UNMANAGED_MIN_MACS = int(os.environ.get("UNMANAGED_MIN_MACS", "2"))
+
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
@@ -97,6 +112,9 @@ class Alert(BaseModel):
     message: str
     acknowledged: bool = False
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    # RCA: id of the parent/upstream device whose outage likely caused this alert.
+    # None = standalone / root-cause alert. Optional so older clients ignore it.
+    correlated_to: Optional[str] = None
 
 
 # ---------------- MOCK GENERATORS ---------------- #
@@ -206,7 +224,19 @@ async def _create_alert(device: dict, severity: AlertSeverity, message: str, for
         severity=severity,
         message=message,
     )
-    await db.alerts.insert_one(alert.model_dump())
+    doc = alert.model_dump()
+    # RCA: if this device has a parent that is already down, annotate the alert
+    # as correlated to that upstream outage. Annotation only — nothing existing
+    # is suppressed or altered.
+    if RCA_ENABLED and device.get("parent_id"):
+        parent = await db.devices.find_one(
+            {"id": device["parent_id"]}, {"_id": 0, "status": 1}
+        )
+        if parent and parent.get("status") in ("offline", "critical"):
+            doc["correlated_to"] = device["parent_id"]
+    await db.alerts.insert_one(doc)
+    # Fire-and-forget notification (silent no-op unless a channel is configured).
+    await notify.notify_alert(doc)
     return alert
 
 
@@ -266,11 +296,45 @@ async def _resolve_device_alerts(device_id: str) -> int:
     return result.modified_count
 
 
+async def _seed_phase4_demo(devices: List[dict]):
+    """Simulation-only: plant a small FDB (one switch port with several MACs and
+    no LLDP neighbor -> an unmanaged segment) and a couple of PLC child assets,
+    so the Topology view demonstrates Phase 4 without needing a real collector.
+    Never called in live mode."""
+    switches = [d for d in devices if d.get("device_type") == "switch"]
+    plcs = [d for d in devices if d.get("device_type") == "plc"]
+    now = datetime.now(timezone.utc).isoformat()
+    if switches:
+        sw = switches[0]
+        await db.device_fdb.update_one(
+            {"device_id": sw["id"]},
+            {"$set": {"device_id": sw["id"], "ts": now, "ports": {
+                "Gi1/0/24": ["00:1b:1b:00:00:01", "00:1b:1b:00:00:02", "00:1b:1b:00:00:03"],
+            }}},
+            upsert=True,
+        )
+    if plcs:
+        plc = plcs[0]
+        for a in [
+            {"name": "IO-Module-1", "asset_type": "io", "detail": "16DI/16DO"},
+            {"name": "IO-Module-2", "asset_type": "io", "detail": "8x Analog In"},
+            {"name": "Drive-A1", "asset_type": "drive", "detail": "VFD 7.5kW"},
+        ]:
+            key = {"parent_device_id": plc["id"], "name": a["name"]}
+            await db.assets.update_one(
+                key,
+                {"$set": {**key, "asset_type": a["asset_type"], "detail": a["detail"], "last_seen": now},
+                 "$setOnInsert": {"id": str(uuid.uuid4())}},
+                upsert=True,
+            )
+
+
 async def _ensure_seed():
     count = await db.devices.count_documents({})
     if count == 0:
         devs = _build_topology()
         await db.devices.insert_many([d.model_dump() for d in devs])
+        await _seed_phase4_demo([d.model_dump() for d in devs])
         # initial alerts for non-online devices
         async for d in db.devices.find({"status": {"$ne": "online"}}, {"_id": 0}):
             sev: AlertSeverity = "critical" if d["status"] in ("critical", "offline") else "warning"
@@ -335,6 +399,8 @@ async def delete_device(device_id: str):
     await db.device_kv.delete_many({"device_id": device_id})
     await db.unified_metrics.delete_many({"device_id": device_id})
     await db.device_interfaces.delete_many({"device_id": device_id})
+    await db.device_fdb.delete_many({"device_id": device_id})
+    await db.assets.delete_many({"parent_device_id": device_id})
     return {"deleted": device_id}
 
 
@@ -575,6 +641,144 @@ async def delete_alert(alert_id: str):
     return {"deleted": alert_id}
 
 
+# ---------------- FDB & LOGICAL ASSETS (Phase 4: unmanaged segments + asset tree) ---------------- #
+# A collector (Node-RED via SNMP dot1q FDB) posts per-port MAC lists here. The
+# topology endpoint then combines FDB with LLDP neighbor links to surface
+# "unmanaged segments" (a switch port with several MACs and no LLDP neighbor =
+# a dumb hub / daisy chain). Logical assets (PLC child IO modules discovered via
+# CIP/PROFINET) are posted to /api/assets and shown as child nodes.
+
+class FdbEntry(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    port: str
+    mac: str
+
+
+class FdbPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    device_id: Optional[str] = None
+    ip: Optional[str] = None
+    name: Optional[str] = None
+    entries: List[FdbEntry] = []
+
+
+@api_router.post("/fdb")
+async def ingest_fdb(payload: FdbPayload):
+    """Store the forwarding database (port -> MAC list) for a switch."""
+    dev = await _find_device(payload.device_id, payload.ip, payload.name)
+    if not dev:
+        return {"matched": False, "ip": payload.ip}
+    ports: dict = {}
+    for e in payload.entries:
+        if not e.port or not e.mac:
+            continue
+        ports.setdefault(e.port, [])
+        if e.mac not in ports[e.port]:
+            ports[e.port].append(e.mac)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.device_fdb.update_one(
+        {"device_id": dev["id"]},
+        {"$set": {"device_id": dev["id"], "ts": now, "ports": ports}},
+        upsert=True,
+    )
+    return {"matched": True, "device_id": dev["id"], "ports": len(ports)}
+
+
+class AssetPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    parent_device_id: Optional[str] = None
+    parent_ip: Optional[str] = None
+    parent_name: Optional[str] = None
+    name: str
+    asset_type: str = "module"     # module | drive | io | hmi | sensor ...
+    detail: Optional[str] = None
+
+
+class AssetsPayload(BaseModel):
+    assets: List[AssetPayload] = []
+
+
+@api_router.post("/assets")
+async def ingest_assets(payload: AssetsPayload):
+    """Upsert logical assets that hang off a parent device (e.g. PLC IO modules)."""
+    upserts = 0
+    unresolved = []
+    for a in payload.assets:
+        parent = await _find_device(a.parent_device_id, a.parent_ip, a.parent_name)
+        if not parent:
+            unresolved.append(a.name)
+            continue
+        key = {"parent_device_id": parent["id"], "name": a.name}
+        await db.assets.update_one(
+            key,
+            {"$set": {**key, "asset_type": a.asset_type, "detail": a.detail,
+                      "last_seen": datetime.now(timezone.utc).isoformat()},
+             "$setOnInsert": {"id": str(uuid.uuid4())}},
+            upsert=True,
+        )
+        upserts += 1
+    return {"received": len(payload.assets), "upserted": upserts, "unresolved": unresolved}
+
+
+@api_router.get("/assets")
+async def list_assets():
+    return await db.assets.find({}, {"_id": 0}).to_list(5000)
+
+
+@api_router.post("/assets/reset")
+async def reset_assets():
+    res = await db.assets.delete_many({})
+    return {"deleted": res.deleted_count}
+
+
+def _compute_unmanaged_segments(device_ids: set, fdb_docs: list, links: list, min_macs: int):
+    """Pure function: derive unmanaged-segment nodes/edges from FDB + LLDP links.
+
+    A (switch, port) becomes a segment when it forwards >= min_macs distinct MACs
+    AND has no LLDP/CDP neighbor on that port (i.e. nothing manageable is there).
+    """
+    lldp_ports = set()
+    for lk in links:
+        if lk.get("source_id") and lk.get("source_port"):
+            lldp_ports.add((lk["source_id"], lk["source_port"]))
+    seg_nodes, seg_edges = [], []
+    for fdb in fdb_docs:
+        sw = fdb.get("device_id")
+        if sw not in device_ids:
+            continue
+        for port, macs in (fdb.get("ports") or {}).items():
+            uniq = list({m for m in (macs or []) if m})
+            if len(uniq) >= min_macs and (sw, port) not in lldp_ports:
+                seg_id = f"seg-{sw}-{port}"
+                seg_nodes.append({"data": {
+                    "id": seg_id, "label": f"{port} · {len(uniq)} hosts",
+                    "type": "unmanaged_segment", "is_segment": True,
+                    "mac_count": len(uniq), "switch_id": sw, "port": port,
+                    "macs": uniq[:50],
+                }})
+                seg_edges.append({"data": {
+                    "id": f"se-{seg_id}", "source": sw, "target": seg_id, "kind": "unmanaged",
+                }})
+    return seg_nodes, seg_edges
+
+
+def _compute_asset_elements(device_ids: set, assets: list):
+    """Pure function: logical-asset nodes/edges hanging off their parent device."""
+    nodes, edges = [], []
+    for a in assets:
+        parent = a.get("parent_device_id")
+        if parent not in device_ids:
+            continue
+        aid = f"asset-{a['id']}"
+        nodes.append({"data": {
+            "id": aid, "label": a.get("name", aid), "type": "asset", "is_asset": True,
+            "asset_type": a.get("asset_type", "module"), "parent_device_id": parent,
+            "detail": a.get("detail"),
+        }})
+        edges.append({"data": {"id": f"ae-{aid}", "source": parent, "target": aid, "kind": "asset"}})
+    return nodes, edges
+
+
 # Topology
 @api_router.get("/topology")
 async def topology():
@@ -622,7 +826,18 @@ async def topology():
                 "label": port_lbl,
                 "kind": "lldp",
             }})
-    return {"nodes": zone_nodes + nodes, "edges": edges, "zones": zones}
+
+    # Phase 4: derive unmanaged segments (FDB + LLDP) and logical asset nodes.
+    fdb_docs = await db.device_fdb.find({}, {"_id": 0}).to_list(5000)
+    assets = await db.assets.find({}, {"_id": 0}).to_list(5000)
+    seg_nodes, seg_edges = _compute_unmanaged_segments(device_ids, fdb_docs, links, UNMANAGED_MIN_MACS)
+    asset_nodes, asset_edges = _compute_asset_elements(device_ids, assets)
+
+    return {
+        "nodes": zone_nodes + nodes + seg_nodes + asset_nodes,
+        "edges": edges + seg_edges + asset_edges,
+        "zones": zones,
+    }
 
 
 # ---------------- TOPOLOGY LINKS (LLDP/CDP neighbor relations) ---------------- #
@@ -844,8 +1059,11 @@ async def generate_mock(replace: bool = True):
     if replace:
         await db.devices.delete_many({})
         await db.alerts.delete_many({})
+        await db.device_fdb.delete_many({})
+        await db.assets.delete_many({})
     devs = _build_topology()
     await db.devices.insert_many([d.model_dump() for d in devs])
+    await _seed_phase4_demo([d.model_dump() for d in devs])
     # seed alerts
     new_alerts = 0
     async for d in db.devices.find({"status": {"$ne": "online"}}, {"_id": 0}):
@@ -870,6 +1088,8 @@ async def reset_all():
     await db.device_kv.delete_many({})
     await db.unified_metrics.delete_many({})
     await db.device_interfaces.delete_many({})
+    await db.device_fdb.delete_many({})
+    await db.assets.delete_many({})
     return {"status": "cleared"}
 
 
@@ -1219,7 +1439,15 @@ async def metrics_loop():
 
 # ---------------- APP WIRING ---------------- #
 
+# Auth & audit endpoints must be attached to api_router BEFORE include_router.
+auth.register_routes(api_router, db)
+audit.register_routes(api_router, db)
+
 app.include_router(api_router)
+
+# Auth + RBAC + audit middleware. Registered BEFORE CORS so that CORS stays the
+# OUTERMOST layer (every response, including 401/403, keeps its CORS headers).
+auth.register_middleware(app, db, audit_module=audit)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1249,6 +1477,9 @@ async def startup():
         await db.device_kv.create_index([("device_id", 1), ("metric_name", 1)], unique=True)
     except Exception as e:
         logger.warning("index create failed: %s", e)
+    # Audit indexes (always) + default admin (only when AUTH_ENABLED and no users yet).
+    await audit.ensure_indexes(db)
+    await auth.ensure_default_admin(db)
     # Only auto-seed mock devices in simulation mode
     if sim_on():
         await _ensure_seed()

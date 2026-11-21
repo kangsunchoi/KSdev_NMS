@@ -33,6 +33,7 @@ export const updateDevice = (id, payload) => api.patch(`/devices/${id}`, payload
 export const deleteDevice = (id) => api.delete(`/devices/${id}`).then((r) => r.data);
 
 export const fetchAlerts = () => api.get("/alerts").then((r) => r.data);
+export const fetchAlertHistory = (params) => api.get("/alerts/history", { params }).then((r) => r.data);
 export const acknowledgeAlert = (id) => api.post(`/alerts/${id}/acknowledge`).then((r) => r.data);
 export const deleteAlert = (id) => api.delete(`/alerts/${id}`).then((r) => r.data);
 

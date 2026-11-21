@@ -74,12 +74,17 @@ async def _deliver(alert: dict):
         logger.warning("notify dispatch failed: %s", e)
 
 
+_window_start = 0.0  # monotonic time of the first suppression in the current window
+
+
 def _allow_now() -> bool:
-    global _suppressed
+    global _suppressed, _window_start
     now = time.monotonic()
     while _sent_times and now - _sent_times[0] > 60:
         _sent_times.pop(0)
     if len(_sent_times) >= NOTIFY_MAX_PER_MIN:
+        if _suppressed == 0:
+            _window_start = now
         _suppressed += 1
         if _suppressed == 1 or _suppressed % 50 == 0:
             logger.warning("notify rate limit hit (%d/min): %d notification(s) suppressed",
@@ -103,4 +108,26 @@ async def notify_alert(alert: dict):
         return
     task = asyncio.create_task(_deliver(dict(alert)))
     _tasks.add(task)  # keep a reference until done (asyncio only holds weak refs)
+    task.add_done_callback(_tasks.discard)
+
+
+async def flush_suppressed():
+    """Called periodically: once a storm window (60s) has passed, send ONE summary
+    of how many notifications were suppressed, then reset (issue #25)."""
+    global _suppressed
+    if not _suppressed:
+        return
+    if not _enabled():
+        _suppressed = 0  # channels were switched off: nothing to summarize later
+        return
+    if time.monotonic() - _window_start < 60:
+        return
+    count, _suppressed = _suppressed, 0
+    _sent_times.append(time.monotonic())  # the summary counts toward the per-minute budget
+    summary = {"id": f"suppressed-{int(time.time())}", "severity": "critical",
+               "device_name": "NetVision OT",
+               "message": f"{count} more alert notification(s) were suppressed in the last minute "
+                          f"(limit {NOTIFY_MAX_PER_MIN}/min). Check the Alerts page."}
+    task = asyncio.create_task(_deliver(summary))
+    _tasks.add(task)
     task.add_done_callback(_tasks.discard)

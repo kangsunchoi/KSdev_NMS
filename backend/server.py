@@ -373,6 +373,21 @@ async def _resolve_device_alerts(device_id: str) -> int:
     return result.modified_count + legacy.modified_count
 
 
+async def _recover_if_stale(dev: dict) -> bool:
+    """A device marked offline only because data stopped (stale) comes back
+    when ANY collector data arrives: ingest, generic metrics or interfaces (#25)."""
+    if not (dev.get("stale") and dev.get("status") == "offline"):
+        return False
+    # set last_seen in the SAME update: otherwise the stale sweep can run between
+    # recovery and the caller's last_seen write and mark the device stale again
+    res = await db.devices.update_one({"id": dev["id"], "stale": True},
+                                      {"$set": {"status": "online", "stale": False, "last_seen": _utc_now_iso()}})
+    if res.modified_count:
+        await _resolve_device_alerts(dev["id"])
+        return True
+    return False
+
+
 async def _seed_phase4_demo(devices: List[dict]):
     """Simulation-only: plant a small FDB (one switch port with several MACs and
     no LLDP neighbor -> an unmanaged segment) and a couple of PLC child assets,
@@ -747,6 +762,7 @@ async def ingest_interfaces(payload: InterfacesPayload):
         upsert=True,
     )
     await db.devices.update_one({"id": dev["id"]}, {"$set": {"last_seen": now_iso}})
+    await _recover_if_stale(dev)
     return {"matched": True, "device_id": dev["id"], "count": len(rows), "bps_ready": dt is not None}
 
 
@@ -759,10 +775,55 @@ async def device_interfaces(device_id: str):
 
 
 # Alerts
+# Upper bound of open alerts sent in the live list / every 5s WS snapshot. The
+# open-alert COUNT stays exact (count_documents); beyond the cap the UI points
+# to the history view.
+OPEN_ALERTS_CAP = int(os.environ.get("OPEN_ALERTS_CAP", "2000"))
+
+
+async def _recent_alerts(limit: int = 200) -> List[dict]:
+    """Live view: open alerts (up to OPEN_ALERTS_CAP, newest first) plus the most
+    recent closed ones up to `limit` rows in total (issue #24)."""
+    open_docs = await (db.alerts.find({"acknowledged": False}, {"_id": 0}).sort("timestamp", -1)
+                       .limit(OPEN_ALERTS_CAP).to_list(OPEN_ALERTS_CAP))
+    room = max(0, limit - len(open_docs))
+    closed = []
+    if room:
+        closed = await (db.alerts.find({"acknowledged": True}, {"_id": 0}).sort("timestamp", -1)
+                        .limit(room).to_list(room))
+    return sorted(open_docs + closed, key=lambda a: a.get("timestamp", ""), reverse=True)
+
+
 @api_router.get("/alerts", response_model=List[Alert])
 async def list_alerts(limit: int = 200):
-    docs = await db.alerts.find({}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
-    return docs
+    return await _recent_alerts(max(1, min(limit, 1000)))
+
+
+@api_router.get("/alerts/history")
+async def alerts_history(
+    state: Optional[Literal["active", "acknowledged", "resolved"]] = None,
+    severity: Optional[AlertSeverity] = None,
+    device_id: Optional[str] = None,
+    hours: int = 24 * 7,
+    page: int = 1,
+    page_size: int = 100,
+):
+    """Paged alert history over the retention period (issue #24)."""
+    hours = max(1, min(hours, 24 * 366))
+    page = max(1, page)
+    page_size = max(1, min(page_size, 500))
+    q: dict = {"timestamp": {"$gte": (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()}}
+    if state:
+        q["state"] = state
+    if severity:
+        q["severity"] = severity
+    if device_id:
+        q["device_id"] = device_id
+    total = await db.alerts.count_documents(q)
+    items = await (db.alerts.find(q, {"_id": 0}).sort([("timestamp", -1), ("id", -1)])
+                   .skip((page - 1) * page_size).limit(page_size).to_list(page_size))
+    return {"items": items, "total": total, "page": page, "page_size": page_size,
+            "pages": (total + page_size - 1) // page_size}
 
 
 @api_router.post("/alerts/{alert_id}/acknowledge", response_model=Alert)
@@ -1101,7 +1162,8 @@ class MetricsPayload(BaseModel):
 async def ingest_metrics(payload: MetricsPayload):
     """Ingest arbitrary named metrics. Resolves device by id/ip/name, stores the
     latest value (device_kv) plus a time-series point (unified_metrics), and
-    bumps last_seen. Does NOT touch network status (that stays with ping/SNMP)."""
+    bumps last_seen. Does not judge network status (that stays with ping/SNMP),
+    except that a device offline only because data stopped (stale) recovers."""
     updated = 0
     unmatched = []
     docs = []
@@ -1124,6 +1186,8 @@ async def ingest_metrics(payload: MetricsPayload):
                       "value": float(s.value), "unit": s.unit or "", "ts": ts}},
             upsert=True,
         )
+        if dev["id"] not in touched:
+            await _recover_if_stale(dev)
         touched.add(dev["id"])
         updated += 1
     if docs:
@@ -1206,6 +1270,7 @@ async def dashboard_summary():
         "avg_latency_ms": avg_latency,
         "avg_packet_loss": avg_packet_loss,
         **_collector_status(),
+        "alerts_truncated": open_alerts > OPEN_ALERTS_CAP,
     }
 
 
@@ -1492,7 +1557,7 @@ async def ws_endpoint(websocket: WebSocket):
 
 async def _build_snapshot() -> dict:
     devices = await db.devices.find({}, {"_id": 0}).to_list(None)
-    alerts = await db.alerts.find({}, {"_id": 0}).sort("timestamp", -1).to_list(200)
+    alerts = await _recent_alerts(200)
     total = len(devices)
     online = sum(1 for d in devices if d["status"] == "online")
     warning = sum(1 for d in devices if d["status"] == "warning")
@@ -1514,6 +1579,7 @@ async def _build_snapshot() -> dict:
             "open_alerts": open_alerts, "critical_alerts": critical_alerts,
             "health_score": health, "avg_latency_ms": avg_lat, "avg_packet_loss": avg_pl,
             **_collector_status(),
+            "alerts_truncated": open_alerts > OPEN_ALERTS_CAP,
         },
         "devices": devices,
         "alerts": alerts,
@@ -1640,6 +1706,7 @@ async def metrics_loop():
                 await _simulate_tick()
 
             await _stale_sweep()
+            await notify.flush_suppressed()
 
             # purge closed (acknowledged/resolved) alerts older than the retention period
             # (counted from when the alert was CLOSED, not created)

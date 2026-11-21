@@ -23,7 +23,7 @@ db = client[os.environ['DB_NAME']]
 _METRIC_TTL_SEC = 24 * 60 * 60  # 24h
 
 
-async def _apply_updates(coll, pairs: List[tuple], ordered: bool = True):
+async def _apply_updates(coll, pairs: List[tuple], ordered: bool = True, upsert: bool = False):
     """Apply (filter, update) pairs in ONE bulk round-trip (issue #16).
     The in-memory test DB (mongomock) does not support current pymongo bulk ops,
     so it falls back to sequential updates there."""
@@ -31,9 +31,9 @@ async def _apply_updates(coll, pairs: List[tuple], ordered: bool = True):
         return
     if mongo_url.startswith("mongomock://"):
         for f, u in pairs:
-            await coll.update_one(f, u)
+            await coll.update_one(f, u, upsert=upsert)
         return
-    await coll.bulk_write([UpdateOne(f, u) for f, u in pairs], ordered=ordered)
+    await coll.bulk_write([UpdateOne(f, u, upsert=upsert) for f, u in pairs], ordered=ordered)
 
 
 _INDEXES = [
@@ -53,6 +53,11 @@ _INDEXES = [
     ("alerts", [("timestamp", -1)], {}),
     ("alerts", "id", {"unique": True}),
     ("devices", "id", {"unique": True}),
+    # ARP table (issue #48): one row per (source, ip, mac); source_id is a gateway
+    # device id or "collector"
+    ("arp_entries", [("source_id", 1), ("ip", 1), ("mac", 1)], {"unique": True}),
+    ("arp_entries", "mac", {}),
+    ("arp_entries", "ip", {}),
 ]
 
 

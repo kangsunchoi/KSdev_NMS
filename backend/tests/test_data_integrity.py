@@ -100,6 +100,7 @@ def _attach_everything(dev, peer):
     requests.post(f"{API}/interfaces", json={"device_id": dev["id"], "interfaces": [{"ifindex": 1}]})
     requests.post(f"{API}/fdb", json={"device_id": dev["id"], "entries": [{"port": "p1", "mac": "aa"}]})
     requests.post(f"{API}/assets", json={"assets": [{"parent_device_id": dev["id"], "name": "io1"}]})
+    requests.post(f"{API}/arp", json={"device_id": dev["id"], "entries": [{"ip": _ip(), "mac": "02:00:00:00:00:01"}]})
     requests.post(f"{API}/links", json={"links": [{"source_id": dev["id"], "neighbor_id": peer["id"]}]})
     _db("alerts").insert_one({"id": str(uuid.uuid4()), "device_id": dev["id"], "device_name": "x",
                               "severity": "warning", "message": "m", "acknowledged": False,

@@ -1,7 +1,7 @@
 """Pydantic models: stored documents and request payloads."""
 import uuid
 from datetime import datetime, timezone
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -147,6 +147,18 @@ class FdbPayload(BaseModel):
     ip: Optional[str] = None
     name: Optional[str] = None
     entries: List[FdbEntry] = []
+
+
+class ArpPayload(BaseModel):
+    """ARP table from an L3 gateway (identified by device_id / ip / name) or from
+    the collector host itself (source="collector"). Entries are validated one by
+    one so a bad row is reported back instead of rejecting the whole post."""
+    model_config = ConfigDict(extra="ignore")
+    source: Optional[Literal["gateway", "collector"]] = None   # None = gateway
+    device_id: Optional[str] = None
+    ip: Optional[str] = None
+    name: Optional[str] = None
+    entries: List[Any] = []   # [{ip, mac, ifname?, vlan?}]
 
 
 class AssetPayload(BaseModel):

@@ -1,5 +1,6 @@
-"""Pure helpers: IP validation/normalization and timestamps."""
+"""Pure helpers: IP / MAC validation and normalization, timestamps."""
 import ipaddress
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -15,6 +16,38 @@ def _valid_ip(value: str) -> bool:
 def _normalize_ip(value: str) -> str:
     """Canonical text form (e.g. lower-case IPv6) so duplicate checks compare like with like."""
     return str(ipaddress.ip_address(value.strip()))
+
+
+_HEX12 = re.compile(r"[0-9a-f]{12}")
+_CISCO_DOTTED = re.compile(r"[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}")
+_HEX_GROUP = re.compile(r"[0-9a-f]{1,2}")
+_INVALID_MACS = {"000000000000", "ffffffffffff"}
+
+
+def _normalize_mac(value) -> Optional[str]:
+    """Canonical 'aa:bb:cc:dd:ee:ff', or None when the value is not a usable MAC.
+
+    Accepts any case and these forms: aa:bb:cc:dd:ee:ff, aa-bb-cc-dd-ee-ff,
+    'aa bb cc dd ee ff' (SNMP hex string), aabb.ccdd.eeff (Cisco), aabbccddeeff.
+    Colon/dash/space groups may drop a leading zero (net-snmp prints 0:1b:...).
+    Mixed separators, all-zero (incomplete ARP) and broadcast are rejected."""
+    if not isinstance(value, str):
+        return None
+    s = value.strip().lower()
+    hexstr = None
+    if _HEX12.fullmatch(s):
+        hexstr = s
+    elif _CISCO_DOTTED.fullmatch(s):
+        hexstr = s.replace(".", "")
+    else:
+        for sep in (":", "-", " "):
+            parts = s.split(sep)
+            if len(parts) == 6 and all(_HEX_GROUP.fullmatch(p) for p in parts):
+                hexstr = "".join(p.zfill(2) for p in parts)
+                break
+    if hexstr is None or hexstr in _INVALID_MACS:
+        return None
+    return ":".join(hexstr[i:i + 2] for i in range(0, 12, 2))
 
 
 def _utc_now_iso() -> str:

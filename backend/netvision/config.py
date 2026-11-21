@@ -26,6 +26,15 @@ RCA_ENABLED = str(os.environ.get("RCA_ENABLED", "true")).strip().lower() in ("1"
 # treated as an "unmanaged segment" (a dumb hub or daisy-chain). Default 2.
 UNMANAGED_MIN_MACS = int(os.environ.get("UNMANAGED_MIN_MACS", "2"))
 
+# L2/L3 link inference (issue #48). OFF by default: while off, GET
+# /api/topology/inferred answers 404 and nothing else changes. /api/arp ingest is
+# always available (it only stores data).
+L2_INFERENCE_ENABLED = str(os.environ.get("L2_INFERENCE_ENABLED", "false")).strip().lower() in (
+    "1", "true", "yes", "on")
+# A MAC that answers for MORE than this many IPs in ARP is flagged as a
+# virtualization host / proxy-ARP device (still placed, but marked). Default 4.
+L2_VIRT_HOST_MAX_IPS = int(os.environ.get("L2_VIRT_HOST_MAX_IPS", "4"))
+
 # Stale detection (issue #9): in live mode, a device whose last_seen is older than
 # this many seconds is marked offline ("no data from collector"). 0 disables.
 # Default 180s = 6 missed cycles of the 30s Node-RED ping flow.

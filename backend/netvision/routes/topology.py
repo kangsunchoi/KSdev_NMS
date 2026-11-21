@@ -3,11 +3,12 @@ LLDP/CDP neighbor links."""
 from datetime import datetime, timezone
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from netvision import config
 from netvision.database import db
 from netvision.devices import _find_device
+from netvision.inference import infer_l2_links
 from netvision.models import LinksPayload
 
 router = APIRouter()
@@ -120,6 +121,25 @@ async def topology():
         "edges": edges + seg_edges + asset_edges,
         "zones": zones,
     }
+
+
+# ---------------- INFERRED L2 LINKS (debug view, issue #48) ---------------- #
+
+@router.get("/topology/inferred")
+async def topology_inferred():
+    """Read-only: run the L2 inference (FDB + ARP + LLDP) and return its raw output.
+    Disabled by default: 404 unless L2_INFERENCE_ENABLED=true. /topology is unchanged."""
+    if not config.L2_INFERENCE_ENABLED:
+        raise HTTPException(404, "L2 inference is disabled (set L2_INFERENCE_ENABLED=true)")
+    devices = await db.devices.find({}, {"_id": 0}).to_list(None)
+    fdb_docs = await db.device_fdb.find({}, {"_id": 0}).to_list(None)
+    links = await db.links.find({}, {"_id": 0}).to_list(None)
+    arp = await db.arp_entries.find({}, {"_id": 0}).to_list(None)
+    result = infer_l2_links(devices, fdb_docs, links, arp, {
+        "unmanaged_min_macs": config.UNMANAGED_MIN_MACS,
+        "virt_host_max_ips": config.L2_VIRT_HOST_MAX_IPS,
+    })
+    return {"enabled": True, **result}
 
 
 # ---------------- TOPOLOGY LINKS (LLDP/CDP neighbor relations) ---------------- #

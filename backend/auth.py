@@ -77,6 +77,7 @@ _COLLECTOR_WRITE = [
     ("POST", r"/api/discovery/register"),
     ("POST", r"/api/fdb"),
     ("POST", r"/api/assets"),
+    ("POST", r"/api/arp"),
 ]
 # Routes that are normal user routes, but which the collector also calls
 # (target lists, discovery config, type correction). A valid X-Ingest-Token lets
@@ -102,7 +103,7 @@ _ADMIN_ROUTES = [
 # Collector write routes that already required a user login before INGEST_TOKEN
 # existed for them. With AUTH_ENABLED=true and no INGEST_TOKEN they keep requiring
 # login (no new anonymous write paths).
-_COLLECTOR_WRITE_LOGIN_WHEN_NO_TOKEN = [("POST", r"/api/fdb"), ("POST", r"/api/assets")]
+_COLLECTOR_WRITE_LOGIN_WHEN_NO_TOKEN = [("POST", r"/api/fdb"), ("POST", r"/api/assets"), ("POST", r"/api/arp")]
 
 COLLECTOR_USER = {"username": "collector", "role": "collector"}
 ANON_COLLECTOR_USER = {"username": "anonymous-collector", "role": "collector"}

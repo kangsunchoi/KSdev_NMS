@@ -8,8 +8,9 @@ import random
 import asyncio
 import json
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import List, Optional, Literal
+import ipaddress
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -94,12 +95,28 @@ class DeviceBase(BaseModel):
 
 
 class DeviceCreate(DeviceBase):
-    pass
+    @field_validator("ip")
+    @classmethod
+    def _check_ip(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not _valid_ip(v):
+            raise ValueError("ip must be a valid IPv4/IPv6 address")
+        return v
 
 
 class DeviceUpdate(BaseModel):
     name: Optional[str] = None
     ip: Optional[str] = None
+
+    @field_validator("ip")
+    @classmethod
+    def _check_ip(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not _valid_ip(v):
+            raise ValueError("ip must be a valid IPv4/IPv6 address")
+        return v
     vendor: Optional[str] = None
     model: Optional[str] = None
     protocol: Optional[str] = None
@@ -219,6 +236,14 @@ def _build_topology() -> List[Device]:
 
 
 # ---------------- HELPERS ---------------- #
+
+def _valid_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address((value or "").strip())
+        return True
+    except ValueError:
+        return False
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -405,6 +430,53 @@ async def _ensure_seed():
 
 # ---------------- ROUTES ---------------- #
 
+# ---------------- DEVICE DATA LIFECYCLE (issue #13) ---------------- #
+# Every collection that references a device id. Keep this list as the single
+# source of truth for cascades, so delete / cleanup / mock reset cannot drift.
+_DEVICE_REF_COLLECTIONS = [
+    ("alerts", "device_id"),
+    ("device_metrics", "device_id"),
+    ("device_kv", "device_id"),
+    ("unified_metrics", "device_id"),
+    ("device_interfaces", "device_id"),
+    ("device_fdb", "device_id"),
+    ("assets", "parent_device_id"),
+]
+
+
+async def _cascade_delete_devices(ids: List[str]) -> int:
+    """Delete devices and everything that references them."""
+    if not ids:
+        return 0
+    res = await db.devices.delete_many({"id": {"$in": ids}})
+    await db.devices.update_many({"parent_id": {"$in": ids}}, {"$set": {"parent_id": None}})
+    await db.links.delete_many({"$or": [{"source_id": {"$in": ids}}, {"target_id": {"$in": ids}}]})
+    for coll, field in _DEVICE_REF_COLLECTIONS:
+        await db[coll].delete_many({field: {"$in": ids}})
+    return res.deleted_count
+
+
+async def _wipe_device_data():
+    """Remove all devices and all device-derived data (simulation mode only)."""
+    await db.devices.delete_many({})
+    await db.links.delete_many({})
+    for coll, _ in _DEVICE_REF_COLLECTIONS:
+        await db[coll].delete_many({})
+
+
+# IPs that do not identify a real device (auto-created name-only devices use 0.0.0.0)
+_PLACEHOLDER_IPS = {"0.0.0.0", "::"}
+
+
+async def _ip_taken(ip: str, exclude_id: Optional[str] = None) -> bool:
+    if not ip or ip in _PLACEHOLDER_IPS:
+        return False
+    q: dict = {"ip": ip}
+    if exclude_id:
+        q["id"] = {"$ne": exclude_id}
+    return await db.devices.find_one(q, {"_id": 0, "id": 1}) is not None
+
+
 @api_router.get("/")
 async def root():
     return {"service": "NetVision OT", "status": "ok"}
@@ -413,12 +485,14 @@ async def root():
 # Devices CRUD
 @api_router.get("/devices", response_model=List[Device])
 async def list_devices():
-    docs = await db.devices.find({}, {"_id": 0}).to_list(1000)
+    docs = await db.devices.find({}, {"_id": 0}).to_list(None)
     return docs
 
 
 @api_router.post("/devices", response_model=Device)
 async def create_device(payload: DeviceCreate):
+    if await _ip_taken(payload.ip):
+        raise HTTPException(409, f"A device with IP {payload.ip} already exists")
     dev = Device(**payload.model_dump())
     await db.devices.insert_one(dev.model_dump())
     return dev
@@ -437,6 +511,8 @@ async def update_device(device_id: str, payload: DeviceUpdate):
     update = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not update:
         raise HTTPException(400, "Empty update")
+    if "ip" in update and await _ip_taken(update["ip"], exclude_id=device_id):
+        raise HTTPException(409, f"A device with IP {update['ip']} already exists")
     result = await db.devices.update_one({"id": device_id}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(404, "Device not found")
@@ -446,18 +522,8 @@ async def update_device(device_id: str, payload: DeviceUpdate):
 
 @api_router.delete("/devices/{device_id}")
 async def delete_device(device_id: str):
-    result = await db.devices.delete_one({"id": device_id})
-    if result.deleted_count == 0:
+    if await _cascade_delete_devices([device_id]) == 0:
         raise HTTPException(404, "Device not found")
-    # cascade: clear parent_id refs, alerts, and topology links
-    await db.devices.update_many({"parent_id": device_id}, {"$set": {"parent_id": None}})
-    await db.alerts.delete_many({"device_id": device_id})
-    await db.links.delete_many({"$or": [{"source_id": device_id}, {"target_id": device_id}]})
-    await db.device_kv.delete_many({"device_id": device_id})
-    await db.unified_metrics.delete_many({"device_id": device_id})
-    await db.device_interfaces.delete_many({"device_id": device_id})
-    await db.device_fdb.delete_many({"device_id": device_id})
-    await db.assets.delete_many({"parent_device_id": device_id})
     return {"deleted": device_id}
 
 
@@ -486,7 +552,7 @@ async def cleanup_devices(payload: CleanupPayload):
             return False
         return all(checks)
 
-    all_devs = await db.devices.find({}, {"_id": 0}).to_list(100000)
+    all_devs = await db.devices.find({}, {"_id": 0}).to_list(None)
     matched = [d for d in all_devs if _matches(d)]
     preview = [{"id": d["id"], "name": d.get("name"), "ip": d.get("ip"),
                 "device_type": d.get("device_type")} for d in matched]
@@ -495,14 +561,7 @@ async def cleanup_devices(payload: CleanupPayload):
         return {"dry_run": True, "matched": len(matched), "devices": preview}
 
     ids = [d["id"] for d in matched]
-    if ids:
-        await db.devices.delete_many({"id": {"$in": ids}})
-        await db.devices.update_many({"parent_id": {"$in": ids}}, {"$set": {"parent_id": None}})
-        await db.alerts.delete_many({"device_id": {"$in": ids}})
-        await db.links.delete_many({"$or": [{"source_id": {"$in": ids}}, {"target_id": {"$in": ids}}]})
-        await db.device_kv.delete_many({"device_id": {"$in": ids}})
-        await db.unified_metrics.delete_many({"device_id": {"$in": ids}})
-        await db.device_interfaces.delete_many({"device_id": {"$in": ids}})
+    await _cascade_delete_devices(ids)
     return {"dry_run": False, "deleted": len(ids), "devices": preview}
 
 
@@ -587,7 +646,7 @@ async def discovery_register(payload: DiscoveryRegister):
     new_ips = []
     for raw in payload.ips:
         ip = (raw or "").strip()
-        if not ip or ip in existing:
+        if not ip or ip in existing or not _valid_ip(ip):
             continue
         dev = Device(name=ip, ip=ip, vendor="unknown", model="unknown",
                      protocol="snmp", device_type=dtype, status="online")
@@ -797,7 +856,7 @@ async def ingest_assets(payload: AssetsPayload):
 
 @api_router.get("/assets")
 async def list_assets():
-    return await db.assets.find({}, {"_id": 0}).to_list(5000)
+    return await db.assets.find({}, {"_id": 0}).to_list(None)
 
 
 @api_router.post("/assets/reset")
@@ -857,7 +916,7 @@ def _compute_asset_elements(device_ids: set, assets: list):
 # Topology
 @api_router.get("/topology")
 async def topology():
-    devices = await db.devices.find({}, {"_id": 0}).to_list(1000)
+    devices = await db.devices.find({}, {"_id": 0}).to_list(None)
     # zone compound parents
     zones = sorted({d["zone"] for d in devices if d.get("zone")})
     zone_nodes = [
@@ -888,7 +947,7 @@ async def topology():
         if d.get("parent_id") and d["parent_id"] in device_ids
     ]
     # LLDP/CDP discovered links (drawn as additional edges; stale ones skipped)
-    links = await db.links.find({}, {"_id": 0}).to_list(5000)
+    links = await db.links.find({}, {"_id": 0}).to_list(None)
     for lk in links:
         if lk.get("source_id") in device_ids and lk.get("target_id") in device_ids:
             port_lbl = ""
@@ -903,8 +962,8 @@ async def topology():
             }})
 
     # Phase 4: derive unmanaged segments (FDB + LLDP) and logical asset nodes.
-    fdb_docs = await db.device_fdb.find({}, {"_id": 0}).to_list(5000)
-    assets = await db.assets.find({}, {"_id": 0}).to_list(5000)
+    fdb_docs = await db.device_fdb.find({}, {"_id": 0}).to_list(None)
+    assets = await db.assets.find({}, {"_id": 0}).to_list(None)
     seg_nodes, seg_edges = _compute_unmanaged_segments(device_ids, fdb_docs, links, UNMANAGED_MIN_MACS)
     asset_nodes, asset_edges = _compute_asset_elements(device_ids, assets)
 
@@ -918,19 +977,25 @@ async def topology():
 # ---------------- TOPOLOGY LINKS (LLDP/CDP neighbor relations) ---------------- #
 
 async def _find_device(did=None, ip=None, name=None):
-    """Resolve a device by id, then ip, then name (first match)."""
+    """Resolve a device by id, then ip, then name.
+
+    A name shared by several devices is ambiguous and resolves to nothing
+    (issue #14): attaching data to the wrong device is worse than reporting
+    it as unmatched to the collector."""
     if did:
         d = await db.devices.find_one({"id": did}, {"_id": 0})
         if d:
             return d
-    if ip:
+    if ip and ip not in _PLACEHOLDER_IPS:
         d = await db.devices.find_one({"ip": ip}, {"_id": 0})
         if d:
             return d
     if name:
-        d = await db.devices.find_one({"name": name}, {"_id": 0})
-        if d:
-            return d
+        matches = await db.devices.find({"name": name}, {"_id": 0}).to_list(2)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            logging.warning("ambiguous device name %r matches several devices; sample not attached", name)
     return None
 
 
@@ -988,7 +1053,7 @@ async def post_links(payload: LinksPayload):
 
 @api_router.get("/links")
 async def list_links():
-    links = await db.links.find({}, {"_id": 0}).to_list(5000)
+    links = await db.links.find({}, {"_id": 0}).to_list(None)
     return links
 
 
@@ -1075,7 +1140,7 @@ async def device_series(device_id: str, metric: str, hours: int = 24):
 # Zones list
 @api_router.get("/zones")
 async def list_zones():
-    devices = await db.devices.find({}, {"_id": 0, "zone": 1, "status": 1}).to_list(1000)
+    devices = await db.devices.find({}, {"_id": 0, "zone": 1, "status": 1}).to_list(None)
     counts: dict[str, dict] = {}
     for d in devices:
         z = d.get("zone")
@@ -1095,7 +1160,7 @@ async def list_zones():
 # Dashboard summary
 @api_router.get("/dashboard/summary")
 async def dashboard_summary():
-    devices = await db.devices.find({}, {"_id": 0}).to_list(1000)
+    devices = await db.devices.find({}, {"_id": 0}).to_list(None)
     total = len(devices)
     online = sum(1 for d in devices if d["status"] == "online")
     warning = sum(1 for d in devices if d["status"] == "warning")
@@ -1142,10 +1207,7 @@ def _require_sim_mode():
 async def generate_mock(replace: bool = True):
     _require_sim_mode()
     if replace:
-        await db.devices.delete_many({})
-        await db.alerts.delete_many({})
-        await db.device_fdb.delete_many({})
-        await db.assets.delete_many({})
+        await _wipe_device_data()
     devs = _build_topology()
     await db.devices.insert_many([d.model_dump() for d in devs])
     await _seed_phase4_demo([d.model_dump() for d in devs])
@@ -1167,15 +1229,7 @@ async def generate_mock(replace: bool = True):
 @api_router.post("/mock/reset")
 async def reset_all():
     _require_sim_mode()
-    await db.devices.delete_many({})
-    await db.alerts.delete_many({})
-    await db.device_metrics.delete_many({})
-    await db.links.delete_many({})
-    await db.device_kv.delete_many({})
-    await db.unified_metrics.delete_many({})
-    await db.device_interfaces.delete_many({})
-    await db.device_fdb.delete_many({})
-    await db.assets.delete_many({})
+    await _wipe_device_data()
     return {"status": "cleared"}
 
 
@@ -1236,19 +1290,7 @@ class IngestPayload(BaseModel):
 
 
 async def _resolve_device(s: MetricSample) -> Optional[dict]:
-    if s.device_id:
-        d = await db.devices.find_one({"id": s.device_id}, {"_id": 0})
-        if d:
-            return d
-    if s.ip:
-        d = await db.devices.find_one({"ip": s.ip}, {"_id": 0})
-        if d:
-            return d
-    if s.name:
-        d = await db.devices.find_one({"name": s.name}, {"_id": 0})
-        if d:
-            return d
-    return None
+    return await _find_device(s.device_id, s.ip, s.name)
 
 
 @api_router.post("/ingest")
@@ -1270,7 +1312,7 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
         device = await _resolve_device(s)
 
         # auto-create a minimal device if requested and not found
-        if device is None and auto_create and (s.ip or s.name):
+        if device is None and auto_create and (s.ip or s.name) and (not s.ip or _valid_ip(s.ip)):
             dev = Device(
                 name=s.name or s.ip or "device",
                 ip=s.ip or "0.0.0.0",
@@ -1431,7 +1473,7 @@ async def ws_endpoint(websocket: WebSocket):
 
 
 async def _build_snapshot() -> dict:
-    devices = await db.devices.find({}, {"_id": 0}).to_list(1000)
+    devices = await db.devices.find({}, {"_id": 0}).to_list(None)
     alerts = await db.alerts.find({}, {"_id": 0}).sort("timestamp", -1).to_list(200)
     total = len(devices)
     online = sum(1 for d in devices if d["status"] == "online")
@@ -1468,7 +1510,7 @@ async def _simulate_tick():
     This is the original per-device simulation body, unchanged in behavior. It only
     runs when simulation mode is ON.
     """
-    devices = await db.devices.find({}, {"_id": 0}).to_list(1000)
+    devices = await db.devices.find({}, {"_id": 0}).to_list(None)
     if not devices:
         return
     metric_docs = []

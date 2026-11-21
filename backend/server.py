@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, WebSocket, WebSo
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import UpdateOne
 import os
 import logging
 import random
@@ -1369,6 +1370,70 @@ class IngestPayload(BaseModel):
     samples: List[MetricSample]
 
 
+async def _apply_updates(coll, pairs: List[tuple], ordered: bool = True):
+    """Apply (filter, update) pairs in ONE bulk round-trip (issue #16).
+    The in-memory test DB (mongomock) does not support current pymongo bulk ops,
+    so it falls back to sequential updates there."""
+    if not pairs:
+        return
+    if mongo_url.startswith("mongomock://"):
+        for f, u in pairs:
+            await coll.update_one(f, u)
+        return
+    await coll.bulk_write([UpdateOne(f, u) for f, u in pairs], ordered=ordered)
+
+
+async def _prefetch_devices(samples) -> dict:
+    """Load every device a batch may refer to with ONE query (issue #16)."""
+    ids, ips, names = set(), set(), set()
+    for s in samples:
+        if s.device_id:
+            ids.add(s.device_id)
+        if s.ip:
+            ips.update({s.ip, s.ip.strip()})
+            if _valid_ip(s.ip):
+                ips.add(_normalize_ip(s.ip))
+        if s.name:
+            names.add(s.name)
+    ors = []
+    if ids:
+        ors.append({"id": {"$in": list(ids)}})
+    if ips:
+        ors.append({"ip": {"$in": list(ips)}})
+    if names:
+        ors.append({"name": {"$in": list(names)}})
+    docs = await db.devices.find({"$or": ors}, {"_id": 0}).to_list(None) if ors else []
+    cache = {"by_id": {}, "by_ip": {}, "by_name": {}}
+    for d in docs:
+        _cache_add(cache, d)
+    return cache
+
+
+def _cache_add(cache: dict, d: dict):
+    if d["id"] in cache["by_id"]:
+        return
+    cache["by_id"][d["id"]] = d
+    if d.get("ip"):
+        cache["by_ip"].setdefault(d["ip"], d)
+    cache["by_name"].setdefault(d.get("name"), []).append(d)
+
+
+def _resolve_cached(cache: dict, did=None, ip=None, name=None) -> Optional[dict]:
+    """Same rules as _find_device (id, normalized/raw ip, unique name), in memory."""
+    if did and did in cache["by_id"]:
+        return cache["by_id"][did]
+    if ip and ip.strip() not in _PLACEHOLDER_IPS:
+        candidates = ([_normalize_ip(ip)] if _valid_ip(ip) else []) + [ip, ip.strip()]
+        for c in candidates:
+            if c in cache["by_ip"]:
+                return cache["by_ip"][c]
+    if name:
+        matches = cache["by_name"].get(name, [])
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
 async def _resolve_device(s: MetricSample) -> Optional[dict]:
     return await _find_device(s.device_id, s.ip, s.name)
 
@@ -1387,15 +1452,18 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
     created = 0
     unmatched: List[str] = []
     metric_docs: List[dict] = []
+    device_ops: List[tuple] = []
+    followups: List[tuple] = []  # ("alert", device, sev, msg) | ("resolve", device_id), run after the bulk write
+    cache = await _prefetch_devices(payload.samples)  # one query for the whole batch (issue #16)
 
     for s in payload.samples:
-        device = await _resolve_device(s)
+        device = _resolve_cached(cache, s.device_id, s.ip, s.name)
 
         # auto-create a minimal device if requested and not found
         # never auto-create when the name already exists: a None here then means the
         # name is AMBIGUOUS, and creating yet another twin would grow forever
         if (device is None and auto_create and (s.ip or s.name) and (not s.ip or _valid_ip(s.ip))
-                and not (s.name and await db.devices.count_documents({"name": s.name}))):
+                and not (s.name and s.name in cache["by_name"])):
             dev = Device(
                 name=s.name or s.ip or "device",
                 ip=_normalize_ip(s.ip) if s.ip else "0.0.0.0",
@@ -1406,6 +1474,7 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
             )
             await db.devices.insert_one(dev.model_dump())
             device = dev.model_dump()
+            _cache_add(cache, device)
             created += 1
 
         if device is None:
@@ -1437,41 +1506,47 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
         # timestamp is kept only for the metric history point.
         now_iso = _utc_now_iso()
         sample_ts = _normalize_ts(s.ts)
-        await db.devices.update_one(
-            {"id": device["id"]},
-            {"$set": {
-                "latency_ms": round(latency, 2),
-                "packet_loss": round(ploss, 2),
-                "cpu_pct": round(cpu, 1),
-                "uptime_pct": round(uptime, 2),
-                "last_seen": now_iso,
-                "status": new_status,
-                "stale": False,
-            }},
-        )
+        fields = {
+            "latency_ms": round(latency, 2),
+            "packet_loss": round(ploss, 2),
+            "cpu_pct": round(cpu, 1),
+            "uptime_pct": round(uptime, 2),
+            "last_seen": now_iso,
+            "status": new_status,
+            "stale": False,
+        }
+        device_ops.append(({"id": device["id"]}, {"$set": fields}))
+        snapshot_for_alert = dict(device)
+        device.update(fields)  # later samples in the same batch see the new state
 
         # create alert on worsening transition (same rule as the simulator)
         if new_status != prev_status and new_status in ("warning", "critical", "offline"):
             sev: AlertSeverity = "critical" if new_status in ("critical", "offline") else "warning"
-            await _create_alert(device, sev, _worsen_message(device["name"], new_status, latency, ploss))
+            followups.append(("alert", snapshot_for_alert, sev,
+                              _worsen_message(device["name"], new_status, latency, ploss)))
 
         # auto-resolve: device recovered to online -> clear its open alerts
         if prev_status != "online" and new_status == "online":
-            await _resolve_device_alerts(device["id"])
+            followups.append(("resolve", device["id"]))
 
         metric_docs.append(_metric_doc(device["id"], sample_ts, latency, ploss, cpu, new_status))
         updated += 1
 
+    await _apply_updates(db.devices, device_ops, ordered=True)
+    # alerts after the device states are written, so RCA sees parents' new status
+    for f in followups:
+        if f[0] == "alert":
+            await _create_alert(f[1], f[2], f[3])
+        else:
+            await _resolve_device_alerts(f[1])
     if metric_docs:
         await db.device_metrics.insert_many(metric_docs)
 
     _LAST_INGEST_TS = datetime.now(timezone.utc).isoformat()
     await _resolve_device_alerts(COLLECTOR_ALERT_ID)  # collector is alive again
 
-    # push fresh snapshot to dashboards
-    if ws_manager.clients:
-        snap = await _build_snapshot()
-        await ws_manager.broadcast(snap)
+    # push to dashboards, coalesced: many collector posts -> one snapshot per second
+    _schedule_broadcast()
 
     return {
         "received": len(payload.samples),
@@ -1530,6 +1605,26 @@ class WSManager:
 
 
 ws_manager = WSManager()
+
+# Coalesced broadcasting (issue #16): collectors may post many times per second;
+# build and send at most one snapshot per BROADCAST_DEBOUNCE_SEC.
+BROADCAST_DEBOUNCE_SEC = float(os.environ.get("BROADCAST_DEBOUNCE_SEC", "1.0"))
+_broadcast_task: Optional[asyncio.Task] = None
+
+
+async def _delayed_broadcast():
+    await asyncio.sleep(BROADCAST_DEBOUNCE_SEC)
+    if ws_manager.clients:
+        await ws_manager.broadcast(await _build_snapshot())
+
+
+def _schedule_broadcast():
+    global _broadcast_task
+    if not ws_manager.clients:
+        return
+    if _broadcast_task is not None and not _broadcast_task.done():
+        return  # one is already pending: this change will be included in it
+    _broadcast_task = asyncio.create_task(_delayed_broadcast())
 
 
 @api_router.websocket("/ws")
@@ -1598,6 +1693,8 @@ async def _simulate_tick():
     if not devices:
         return
     metric_docs = []
+    ops: List[tuple] = []
+    followups: List[tuple] = []
     sample_now = (_TICK % _SAMPLE_EVERY == 0)
     now_iso = datetime.now(timezone.utc).isoformat()
     for d in devices:
@@ -1624,20 +1721,27 @@ async def _simulate_tick():
             "last_seen": now_iso,
             "status": new_status,
         }
-        await db.devices.update_one({"id": d["id"]}, {"$set": update})
+        ops.append(({"id": d["id"]}, {"$set": update}))
 
         # create alert if status worsened
         if new_status != d["status"] and new_status in ("warning", "critical", "offline"):
             sev: AlertSeverity = "critical" if new_status in ("critical", "offline") else "warning"
-            await _create_alert(d, sev, _worsen_message(d["name"], new_status, latency, ploss))
+            followups.append(("alert", d, sev, _worsen_message(d["name"], new_status, latency, ploss)))
 
         # auto-resolve: device recovered to online -> clear its open alerts
         if d["status"] != "online" and new_status == "online":
-            await _resolve_device_alerts(d["id"])
+            followups.append(("resolve", d["id"]))
 
         if sample_now:
             metric_docs.append(_metric_doc(d["id"], now_iso, latency, ploss, cpu, new_status))
 
+    # one round-trip for all devices instead of one per device (issue #16)
+    await _apply_updates(db.devices, ops, ordered=False)
+    for f in followups:
+        if f[0] == "alert":
+            await _create_alert(f[1], f[2], f[3])
+        else:
+            await _resolve_device_alerts(f[1])
     if metric_docs:
         await db.device_metrics.insert_many(metric_docs)
 

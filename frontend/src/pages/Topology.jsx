@@ -32,6 +32,28 @@ const TYPE_BASE = {
   asset: "#0e7490",
 };
 
+// Link drawing style: "bezier" (curved, default) | "taxi" (orthogonal).
+// Note: in taxi mode parallel links between the same two nodes can overlap.
+const LINK_STYLE_KEY = "nv_topo_link_style";
+const LINK_STYLES = ["bezier", "taxi"];
+
+const loadLinkStyle = () => {
+  try {
+    const v = window.localStorage.getItem(LINK_STYLE_KEY);
+    return LINK_STYLES.includes(v) ? v : "bezier";
+  } catch (e) {
+    return "bezier";
+  }
+};
+
+const saveLinkStyle = (v) => {
+  try {
+    window.localStorage.setItem(LINK_STYLE_KEY, v);
+  } catch (e) {
+    /* storage unavailable (private mode etc.) — keep in-memory only */
+  }
+};
+
 export default function Topology() {
   const { t } = useI18n();
   const { data, isLoading } = useQuery({
@@ -47,7 +69,13 @@ export default function Topology() {
 
   const [selected, setSelected] = useState(null);
   const [collapsedZones, setCollapsedZones] = useState(() => new Set());
+  const [linkStyle, setLinkStyleState] = useState(loadLinkStyle);
   const cyRef = useRef(null);
+
+  const setLinkStyle = (v) => {
+    setLinkStyleState(v);
+    saveLinkStyle(v);
+  };
 
   const zones = data?.zones || [];
 
@@ -188,6 +216,38 @@ export default function Topology() {
         "curve-style": "bezier",
       },
     },
+    ...(linkStyle === "taxi"
+      ? [{
+          selector: "edge",
+          style: {
+            "curve-style": "taxi",
+            // breadthfirst lays out top-down, so route vertical-first
+            "taxi-direction": "vertical",
+            "taxi-turn": "50%",
+            "taxi-turn-min-distance": 8,
+          },
+        }]
+      : []),
+    {
+      // LLDP/CDP port label, e.g. "Gi0/1→eth0" (empty labels are skipped)
+      selector: "edge[?label]",
+      style: {
+        label: "data(label)",
+        color: "#16c79a",
+        "font-family": "JetBrains Mono, monospace",
+        "font-size": 9,
+        "text-rotation": "autorotate",
+        "text-background-color": "#16213e",
+        "text-background-opacity": 0.9,
+        "text-background-padding": "2px",
+        "text-background-shape": "roundrectangle",
+        "text-border-color": "#2a3b55",
+        "text-border-width": 1,
+        "text-border-opacity": 1,
+        // hide when zoomed far out (rendered size < 6px)
+        "min-zoomed-font-size": 6,
+      },
+    },
     {
       selector: "edge[kind = 'unmanaged']",
       style: { "line-style": "dashed", "line-color": "#64748b", "target-arrow-shape": "none" },
@@ -222,6 +282,28 @@ export default function Topology() {
           <h1 className="text-[22px] font-semibold tracking-tight">{t("topo.title")}</h1>
         </div>
         <div className="flex items-center gap-4 text-[11px] font-mono">
+          <div className="flex items-center gap-2" data-testid="topology-link-style">
+            <span className="text-nv-muted uppercase tracking-wider">{t("topo.linkStyle")}</span>
+            <button
+              type="button"
+              className={`nv-btn ${linkStyle === "bezier" ? "nv-btn-primary" : ""}`}
+              onClick={() => setLinkStyle("bezier")}
+              aria-pressed={linkStyle === "bezier"}
+              data-testid="topology-link-style-bezier"
+            >
+              {t("topo.linkCurved")}
+            </button>
+            <button
+              type="button"
+              className={`nv-btn ${linkStyle === "taxi" ? "nv-btn-primary" : ""}`}
+              onClick={() => setLinkStyle("taxi")}
+              aria-pressed={linkStyle === "taxi"}
+              title={t("topo.linkOrthoHint")}
+              data-testid="topology-link-style-taxi"
+            >
+              {t("topo.linkOrtho")}
+            </button>
+          </div>
           <Legend />
         </div>
       </div>

@@ -4,8 +4,8 @@ import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
-import notify
-from netvision import config, ws
+from netvision import config, ws  # first: loads .env before notify reads env
+import notify  # noqa: E402
 from netvision.database import db
 from netvision.monitoring import _stale_sweep
 from netvision.simulation import _simulate_tick

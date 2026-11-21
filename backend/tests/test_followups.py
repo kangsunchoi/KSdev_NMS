@@ -165,3 +165,15 @@ def test_one_failing_index_does_not_skip_the_rest(monkeypatch):
     assert len(created) == len(database._INDEXES) - 1
     assert ("links", str([("source_id", 1), ("target_id", 1)])) in created
     assert ("alerts", "id") in created
+
+
+# ---- review of PR #42: the runtime sim toggle must reach shared state ---- #
+def test_sim_mode_toggle_updates_shared_state(monkeypatch):
+    monkeypatch.setattr(config, "_SIM_OVERRIDE", config._SIM_OVERRIDE)  # restored on teardown
+    assert requests.post(f"{API}/sim/mode", json={"enabled": False}).json()["simulation_mode"] is False
+    got = requests.get(f"{API}/sim/mode").json()
+    assert got["simulation_mode"] is False and got["override"] is False
+    assert config.sim_on() is False
+    assert requests.post(f"{API}/mock/reset").status_code == 409
+    assert requests.post(f"{API}/sim/mode", json={"enabled": True}).json()["simulation_mode"] is True
+    assert requests.get(f"{API}/sim/mode").json()["override"] is True

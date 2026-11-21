@@ -2,8 +2,8 @@
 from datetime import datetime, timezone, timedelta
 from typing import List
 
-import notify
-from netvision import config
+from netvision import config  # first: loads .env before notify reads env
+import notify  # noqa: E402
 from netvision.database import db
 from netvision.helpers import _utc_now_iso
 from netvision.models import Alert, AlertSeverity

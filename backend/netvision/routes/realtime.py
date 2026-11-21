@@ -5,6 +5,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 import auth
 from netvision import ws
+from netvision.database import db
 
 router = APIRouter()
 
@@ -15,7 +16,7 @@ async def ws_endpoint(websocket: WebSocket):
     # Browsers cannot set headers on a WebSocket, so the token comes as ?token=.
     if auth.AUTH_ENABLED:
         token = websocket.query_params.get("token")
-        if not (token and auth.verify_token(token)):
+        if not await auth.resolve_session(db, token):  # also rejects deleted/revoked users (#49)
             await websocket.close(code=1008)  # policy violation -> handshake rejected
             return
     await ws.ws_manager.connect(websocket)

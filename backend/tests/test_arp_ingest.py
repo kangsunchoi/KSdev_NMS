@@ -29,6 +29,8 @@ COLLECTOR = {"X-Ingest-Token": INGEST}
 
 
 def bearer(role):
+    from test_security import _ensure_user  # sessions are checked against the users collection (#49)
+    _ensure_user(f"u-{role}", role)
     return {"Authorization": f"Bearer {auth.make_token(f'u-{role}', role)}"}
 
 

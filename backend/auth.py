@@ -179,9 +179,9 @@ def _b64u_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + pad)
 
 
-def make_token(username: str, role: str) -> str:
+def make_token(username: str, role: str, version: int = 0) -> str:
     exp = (datetime.now(timezone.utc) + timedelta(hours=TOKEN_TTL_HOURS)).timestamp()
-    payload = _b64u(json.dumps({"u": username, "r": role, "exp": exp}).encode())
+    payload = _b64u(json.dumps({"u": username, "r": role, "v": int(version), "exp": exp}).encode())
     sig = _b64u(hmac.new(AUTH_SECRET.encode(), payload.encode(), hashlib.sha256).digest())
     return f"{payload}.{sig}"
 
@@ -195,9 +195,56 @@ def verify_token(token: str) -> Optional[dict]:
         data = json.loads(_b64u_decode(payload))
         if float(data.get("exp", 0)) < datetime.now(timezone.utc).timestamp():
             return None
-        return {"username": data["u"], "role": data["r"]}
+        return {"username": data["u"], "role": data["r"], "v": int(data.get("v", 0))}
     except Exception:
         return None
+
+
+# ---------------- live user check (issue #49) ---------------- #
+# The token is signed but stateless, so on its own a role change, password reset
+# or deletion would only take effect when it expires. Every authenticated request
+# therefore re-reads the user (role + token_version) from the DB, through a short
+# per-process cache that the user-management routes invalidate immediately.
+USER_CACHE_SEC = float(os.environ.get("AUTH_USER_CACHE_SEC", "5"))
+_user_cache: dict = {}  # username -> (expires_at, doc or None)
+
+
+_USER_CACHE_MAX = 1000
+
+
+def _new_token_version() -> int:
+    return secrets.randbelow(2**31 - 1) + 1  # never 0 (= tokens/users from before #49)
+
+
+def _invalidate_user(username: str) -> None:
+    _user_cache.pop(username, None)
+
+
+async def _live_user(db, username: str) -> Optional[dict]:
+    now = datetime.now(timezone.utc).timestamp()
+    hit = _user_cache.get(username)
+    if hit and hit[0] > now:
+        return hit[1]
+    doc = await db.users.find_one({"username": username}, {"_id": 0, "role": 1, "token_version": 1})
+    if len(_user_cache) >= _USER_CACHE_MAX:  # bounded: drop expired entries, else start over
+        for k in [k for k, (exp, _) in _user_cache.items() if exp <= now]:
+            del _user_cache[k]
+        if len(_user_cache) >= _USER_CACHE_MAX:
+            _user_cache.clear()
+    _user_cache[username] = (now + USER_CACHE_SEC, doc)
+    return doc
+
+
+async def resolve_session(db, token: Optional[str]) -> Optional[dict]:
+    """Token -> {username, role} using the CURRENT role, or None if the token is
+    invalid/expired, the user no longer exists, or it was revoked."""
+    claims = verify_token(token) if token else None
+    if not claims:
+        return None
+    doc = await _live_user(db, claims["username"])
+    if not doc or int(doc.get("token_version", 0)) != claims["v"]:
+        return None
+    return {"username": claims["username"], "role": doc.get("role", "viewer")}
 
 
 # ---------------- request helpers ---------------- #
@@ -253,7 +300,7 @@ def register_routes(api_router: APIRouter, db):
         user = await db.users.find_one({"username": payload.username}, {"_id": 0})
         if not user or not verify_password(payload.password, user.get("password_hash", "")):
             raise HTTPException(401, "Invalid username or password")
-        token = make_token(user["username"], user["role"])
+        token = make_token(user["username"], user["role"], user.get("token_version", 0))
         return {"token": token, "username": user["username"], "role": user["role"],
                 "auth_enabled": True}
 
@@ -279,8 +326,11 @@ def register_routes(api_router: APIRouter, db):
             raise HTTPException(409, "User already exists")
         doc = {"username": payload.username, "role": payload.role,
                "password_hash": hash_password(payload.password),
+               # random start: a re-created username never revives the old account's tokens
+               "token_version": _new_token_version(),
                "created_at": datetime.now(timezone.utc).isoformat()}
         await db.users.insert_one(doc)
+        _invalidate_user(payload.username)  # drop a cached "no such user"
         return {"username": doc["username"], "role": doc["role"]}
 
     @api_router.patch("/auth/users/{username}")
@@ -294,7 +344,11 @@ def register_routes(api_router: APIRouter, db):
             update["password_hash"] = hash_password(payload.password)
         if not update:
             raise HTTPException(400, "Nothing to update")
-        res = await db.users.update_one({"username": username}, {"$set": update})
+        ops = {"$set": update}
+        if "password_hash" in update:  # a password reset logs out existing sessions
+            ops["$inc"] = {"token_version": 1}
+        res = await db.users.update_one({"username": username}, ops)
+        _invalidate_user(username)
         if res.matched_count == 0:
             raise HTTPException(404, "User not found")
         return {"username": username, "updated": list(update.keys())}
@@ -306,6 +360,7 @@ def register_routes(api_router: APIRouter, db):
         if target and target.get("role") == "admin" and remaining <= 1:
             raise HTTPException(400, "Cannot delete the last admin")
         res = await db.users.delete_one({"username": username})
+        _invalidate_user(username)
         if res.deleted_count == 0:
             raise HTTPException(404, "User not found")
         return {"deleted": username}
@@ -351,8 +406,7 @@ def register_middleware(app, db, audit_module=None):
             return await _proceed(request, call_next, db, audit_module, user=None)
 
         # 5) Everything else requires a valid session token.
-        token = _bearer(request)
-        claims = verify_token(token) if token else None
+        claims = await resolve_session(db, _bearer(request))
         if not claims:
             return JSONResponse({"detail": "Authentication required"}, status_code=401)
 
@@ -401,8 +455,10 @@ async def ensure_default_admin(db):
     await db.users.insert_one({
         "username": user, "role": "admin",
         "password_hash": hash_password(pw),
+        "token_version": _new_token_version(),
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
+    _invalidate_user(user)
     if pw == "admin":
         logger.warning("Created default admin '%s' with password 'admin' — CHANGE IT NOW "
                        "(set ADMIN_PASSWORD in .env before first start, or update via /api/auth/users).", user)

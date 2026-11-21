@@ -58,6 +58,7 @@ _INDEXES = [
     ("arp_entries", [("source_id", 1), ("ip", 1), ("mac", 1)], {"unique": True}),
     ("arp_entries", "mac", {}),
     ("arp_entries", "ip", {}),
+    ("users", "username", {}),  # looked up on every authenticated request (#49)
 ]
 
 

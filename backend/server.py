@@ -60,10 +60,14 @@ app.include_router(api_router)
 # OUTERMOST layer (every response, including 401/403, keeps its CORS headers).
 auth.register_middleware(app, database.db, audit_module=audit)
 
+# CORS (issue #8). The UI authenticates with a Bearer header (WebSocket: ?token=),
+# never cookies, so credentialed cross-origin access is never needed or granted.
+CORS_ORIGINS = auth.parse_cors_origins(os.environ.get('CORS_ORIGINS'))
+CORS_ALLOW_ALL = CORS_ORIGINS == ['*']
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_credentials=False,
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

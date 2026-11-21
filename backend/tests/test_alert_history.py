@@ -13,7 +13,8 @@ if "server" not in sys.modules:
     pytest.skip("needs the in-process test server", allow_module_level=True)
 
 import notify  # noqa: E402
-import server  # noqa: E402
+import server  # noqa: E402,F401  (in-process test server; netvision.* below is its code)
+from netvision import config, monitoring  # noqa: E402
 from test_data_integrity import _db, _dev  # noqa: E402
 
 API = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") + "/api"
@@ -51,7 +52,7 @@ def test_live_list_contains_every_open_alert():
 
 @pytest.mark.parametrize("path", ["metrics", "interfaces"])
 def test_stale_device_recovers_on_metrics_or_interfaces(monkeypatch, path):
-    monkeypatch.setattr(server, "_SIM_OVERRIDE", False)
+    monkeypatch.setattr(config, "_SIM_OVERRIDE", False)
     d = _dev()
     _db("devices").update_one({"id": d["id"]}, {"$set": {"status": "offline", "stale": True}})
     if path == "metrics":
@@ -63,7 +64,7 @@ def test_stale_device_recovers_on_metrics_or_interfaces(monkeypatch, path):
 
 
 def test_real_offline_is_not_recovered_by_metrics(monkeypatch):
-    monkeypatch.setattr(server, "_SIM_OVERRIDE", False)
+    monkeypatch.setattr(config, "_SIM_OVERRIDE", False)
     d = _dev()
     _db("devices").update_one({"id": d["id"]}, {"$set": {"status": "offline", "stale": False}})
     requests.post(f"{API}/metrics", json={"samples": [{"device_id": d["id"], "metric_name": "t", "value": 1}]})
@@ -88,22 +89,22 @@ def test_storm_summary_is_sent_once(monkeypatch):
 def test_recovery_survives_a_sweep_in_between(monkeypatch):
     """Recovery stamps last_seen itself, so a sweep right after it keeps the device online."""
     import asyncio
-    monkeypatch.setattr(server, "_SIM_OVERRIDE", False)
-    monkeypatch.setattr(server, "STALE_AFTER_SEC", 30)
-    monkeypatch.setattr(server, "_STARTED_AT", datetime.now(timezone.utc) - timedelta(hours=1))
+    monkeypatch.setattr(config, "_SIM_OVERRIDE", False)
+    monkeypatch.setattr(config, "STALE_AFTER_SEC", 30)
+    monkeypatch.setattr(config, "_STARTED_AT", datetime.now(timezone.utc) - timedelta(hours=1))
     d = _dev()
     old = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
     _db("devices").update_one({"id": d["id"]}, {"$set": {"status": "offline", "stale": True, "last_seen": old}})
     dev = requests.get(f"{API}/devices/{d['id']}").json()
     if os.environ["MONGO_URL"].startswith("mongomock://"):
-        asyncio.run(server._recover_if_stale(dev))
-        asyncio.run(server._stale_sweep())
+        asyncio.run(monitoring._recover_if_stale(dev))
+        asyncio.run(monitoring._stale_sweep())
         after = requests.get(f"{API}/devices/{d['id']}").json()
         assert after["status"] == "online" and after["stale"] is False
 
 
 def test_live_list_is_capped_but_count_exact(monkeypatch):
-    monkeypatch.setattr(server, "OPEN_ALERTS_CAP", 5)
+    monkeypatch.setattr(config, "OPEN_ALERTS_CAP", 5)
     dev_id = f"cap-{uuid.uuid4().hex[:6]}"
     _db("alerts").insert_many(_alert_rows(dev_id, 12))
     try:

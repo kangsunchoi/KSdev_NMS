@@ -11,7 +11,8 @@ import requests
 if "server" not in sys.modules:
     pytest.skip("needs the in-process test server", allow_module_level=True)
 
-import server  # noqa: E402
+import server  # noqa: E402,F401  (in-process test server; netvision.* below is its code)
+from netvision import config, database, devices, ws  # noqa: E402
 from test_data_integrity import _db, _dev, _ip, _legacy  # noqa: E402
 
 API = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") + "/api"
@@ -20,7 +21,7 @@ IN_MEMORY = os.environ["MONGO_URL"].startswith("mongomock://")
 
 @pytest.fixture
 def live(monkeypatch):
-    monkeypatch.setattr(server, "_SIM_OVERRIDE", False)
+    monkeypatch.setattr(config, "_SIM_OVERRIDE", False)
 
 
 def _alerts(dev_id):
@@ -82,7 +83,7 @@ def test_stored_ips_are_normalized_at_startup():
     taken = _dev()
     c = _legacy(taken["ip"].upper() if ":" in taken["ip"] else f" {taken['ip']}")  # collides
     host = _legacy("plc-01.local")
-    asyncio.run(server._normalize_stored_ips())
+    asyncio.run(devices._normalize_stored_ips())
     got = {d["id"]: d["ip"] for d in _db("devices").find({"id": {"$in": [a["id"], b["id"], c["id"], host["id"]]}})}
     assert got[a["id"]] == a["ip"].strip()
     assert got[b["id"]] == b["ip"].lower()
@@ -112,23 +113,23 @@ def test_broadcast_rate_bounded_under_constant_ingest(monkeypatch):
     async def noop_broadcast(_msg):
         pass
 
-    monkeypatch.setattr(server, "BROADCAST_DEBOUNCE_SEC", 0.05)
-    monkeypatch.setattr(server, "_build_snapshot", slow_snapshot)
-    monkeypatch.setattr(server.ws_manager, "broadcast", noop_broadcast)
-    monkeypatch.setattr(server.ws_manager, "clients", {object()})
-    monkeypatch.setattr(server, "_broadcast_task", None)
+    monkeypatch.setattr(config, "BROADCAST_DEBOUNCE_SEC", 0.05)
+    monkeypatch.setattr(ws, "_build_snapshot", slow_snapshot)
+    monkeypatch.setattr(ws.ws_manager, "broadcast", noop_broadcast)
+    monkeypatch.setattr(ws.ws_manager, "clients", {object()})
+    monkeypatch.setattr(ws, "_broadcast_task", None)
 
     async def flood():
         end = asyncio.get_running_loop().time() + 0.7
         while asyncio.get_running_loop().time() < end:
-            server._schedule_broadcast()
+            ws._schedule_broadcast()
             await asyncio.sleep(0.005)
-        task = server._broadcast_task
+        task = ws._broadcast_task
         if task:
             task.cancel()
 
     asyncio.run(flood())
-    monkeypatch.setattr(server, "_broadcast_task", None)
+    monkeypatch.setattr(ws, "_broadcast_task", None)
     # each snapshot waits the debounce first: <= 0.7 / (0.05 + 0.02) + 1 ~= 11
     assert 3 <= len(builds) <= 12, len(builds)
 
@@ -158,9 +159,9 @@ def test_one_failing_index_does_not_skip_the_rest(monkeypatch):
         def __getattr__(self, name):
             return Coll(name)
 
-    monkeypatch.setattr(server, "db", FakeDB())
-    failed = asyncio.run(server._ensure_indexes())
+    monkeypatch.setattr(database, "db", FakeDB())
+    failed = asyncio.run(database._ensure_indexes())
     assert failed == [("devices", "id")]
-    assert len(created) == len(server._INDEXES) - 1
+    assert len(created) == len(database._INDEXES) - 1
     assert ("links", str([("source_id", 1), ("target_id", 1)])) in created
     assert ("alerts", "id") in created

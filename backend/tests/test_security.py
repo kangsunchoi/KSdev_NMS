@@ -15,7 +15,9 @@ if "server" not in sys.modules:  # running against an external server
     pytest.skip("security tests need the in-process test server", allow_module_level=True)
 
 import auth  # noqa: E402
-import server  # noqa: E402
+import server  # noqa: E402,F401  (in-process test server; netvision.* below is its code)
+from netvision import config  # noqa: E402
+from netvision.routes import discovery  # noqa: E402
 
 BASE = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
 API = f"{BASE}/api"
@@ -42,7 +44,7 @@ def ingest_token(monkeypatch):
 
 @pytest.fixture
 def live_mode(monkeypatch):
-    monkeypatch.setattr(server, "_SIM_OVERRIDE", False)
+    monkeypatch.setattr(config, "_SIM_OVERRIDE", False)
 
 
 # ---- baseline: auth off keeps legacy behavior ---- #
@@ -108,9 +110,9 @@ def test_mock_endpoints_blocked_in_live_mode(live_mode):
 def test_discovery_community_masked(ingest_token):
     requests.put(f"{API}/discovery", json={"community": "s3cret"}, headers=COLLECTOR)
     ui = requests.get(f"{API}/discovery").json()
-    assert ui["community"] == server.COMMUNITY_MASK
+    assert ui["community"] == discovery.COMMUNITY_MASK
     # UI saving the form back with the mask must not overwrite the real value
-    requests.put(f"{API}/discovery", json={"community": server.COMMUNITY_MASK, "subnet": "10.0.0.0/24"})
+    requests.put(f"{API}/discovery", json={"community": discovery.COMMUNITY_MASK, "subnet": "10.0.0.0/24"})
     assert requests.get(f"{API}/discovery", headers=COLLECTOR).json()["community"] == "s3cret"
     requests.put(f"{API}/discovery", json={"community": "public"}, headers=COLLECTOR)
 
@@ -144,8 +146,8 @@ def test_fdb_assets_need_login_when_auth_on_without_token(auth_on):
 
 
 def test_sim_mode_toggle_cannot_unlock_reset(monkeypatch):
-    monkeypatch.setattr(server, "_SIM_ENV", False)          # .env says live
-    monkeypatch.setattr(server, "_SIM_OVERRIDE", True)      # runtime toggled to sim
+    monkeypatch.setattr(config, "_SIM_ENV", False)          # .env says live
+    monkeypatch.setattr(config, "_SIM_OVERRIDE", True)      # runtime toggled to sim
     assert requests.post(f"{API}/mock/reset").status_code == 409
     assert requests.get(f"{API}/devices").json()
 

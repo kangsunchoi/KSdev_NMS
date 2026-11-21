@@ -9,7 +9,8 @@ import requests
 if "server" not in sys.modules:
     pytest.skip("needs the in-process test server", allow_module_level=True)
 
-import server  # noqa: E402
+import server  # noqa: E402,F401  (in-process test server; netvision.* below is its code)
+from netvision import config, database, ws  # noqa: E402
 from test_data_integrity import _dev  # noqa: E402
 
 API = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") + "/api"
@@ -18,14 +19,14 @@ IN_MEMORY = os.environ["MONGO_URL"].startswith("mongomock://")
 
 @pytest.fixture
 def live(monkeypatch):
-    monkeypatch.setattr(server, "_SIM_OVERRIDE", False)
+    monkeypatch.setattr(config, "_SIM_OVERRIDE", False)
 
 
 def test_batch_ingest_uses_no_per_sample_lookups(live, monkeypatch):
     devs = [_dev() for _ in range(40)]
     if IN_MEMORY:  # count single-document device lookups during the batch
         calls = {"n": 0}
-        cls = type(server.db.devices)  # db.devices returns a new wrapper each access
+        cls = type(database.db.devices)  # db.devices returns a new wrapper each access
         orig = cls.find_one
 
         async def counting(self, *a, **k):
@@ -67,15 +68,15 @@ def test_many_ingests_coalesce_into_few_broadcasts(live):
             sent.append(time.time())
 
     fake = FakeWS()
-    server.ws_manager.clients.add(fake)
+    ws.ws_manager.clients.add(fake)
     try:
         d = _dev()
         t0 = time.time()
         for i in range(15):
             requests.post(f"{API}/ingest", json={"samples": [{"ip": d["ip"], "latency_ms": i}]})
-        time.sleep(server.BROADCAST_DEBOUNCE_SEC + 0.8)
+        time.sleep(config.BROADCAST_DEBOUNCE_SEC + 0.8)
         burst = [t for t in sent if t >= t0]
         # 15 posts -> about one coalesced snapshot per second (+ the 5s periodic tick)
         assert 1 <= len(burst) <= 4, f"{len(burst)} broadcasts for 15 ingests"
     finally:
-        server.ws_manager.clients.discard(fake)
+        ws.ws_manager.clients.discard(fake)

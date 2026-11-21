@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  fetchAlerts, acknowledgeAlert, deleteAlert, bulkAcknowledgeAlerts, fetchDevices,
+  fetchAlerts, acknowledgeAlert, deleteAlert, bulkAcknowledgeAlerts, fetchDevices, fetchSummary,
 } from "../lib/api";
 import { exportCsv } from "../lib/csv";
 import { useI18n } from "../lib/i18n";
@@ -18,6 +18,7 @@ export default function Alerts() {
     queryKey: ["alerts"],
     queryFn: fetchAlerts,
   });
+  const { data: summary } = useQuery({ queryKey: ["summary"], queryFn: fetchSummary });
   const { data: devices = [] } = useQuery({
     queryKey: ["devices"],
     queryFn: fetchDevices,
@@ -34,15 +35,15 @@ export default function Alerts() {
 
   const mAck = useMutation({
     mutationFn: acknowledgeAlert,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["alerts"] }); toast.success(t("al.acked")); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["alerts"] }); qc.invalidateQueries({ queryKey: ["alertHistory"] }); toast.success(t("al.acked")); },
   });
   const mDel = useMutation({
     mutationFn: deleteAlert,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["alerts"] }); toast.success(t("al.removed")); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["alerts"] }); qc.invalidateQueries({ queryKey: ["alertHistory"] }); toast.success(t("al.removed")); },
   });
   const mBulkAck = useMutation({
     mutationFn: bulkAcknowledgeAlerts,
-    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["alerts"] }); toast.success(`${t("al.bulkAcked")} ${r.acknowledged}`); setSelected(new Set()); },
+    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["alerts"] }); qc.invalidateQueries({ queryKey: ["alertHistory"] }); toast.success(`${t("al.bulkAcked")} ${r.acknowledged}`); setSelected(new Set()); },
   });
 
   const filtered = useMemo(() => {
@@ -129,7 +130,7 @@ export default function Alerts() {
           <div className="text-[11px] tracking-[0.2em] text-nv-muted uppercase font-mono">{t("al.eventLog")}</div>
           <h1 className="text-[22px] font-semibold tracking-tight">{t("nav.alerts")}</h1>
         </div>
-        <div className="flex gap-2">
+        <div className={`flex gap-2 ${view === "history" ? "invisible" : ""}`} aria-hidden={view === "history"}>
           <button
             className="nv-btn"
             onClick={handleExport}
@@ -162,6 +163,12 @@ export default function Alerts() {
       </div>
 
       {view === "history" ? <AlertHistory deviceName={deviceName} /> : (<>
+      {summary?.alerts_truncated && (
+        <div className="mb-3 px-3 py-2 border border-[#f4d03f] text-[#f4d03f] text-[12px] font-mono"
+          data-testid="alerts-truncated">
+          {t("al.truncated")}
+        </div>
+      )}
 
       <div className="flex gap-2 mb-3 items-center flex-wrap">
         {["all", "open", "acknowledged", "resolved"].map((f) => (

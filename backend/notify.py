@@ -115,11 +115,15 @@ async def flush_suppressed():
     """Called periodically: once a storm window (60s) has passed, send ONE summary
     of how many notifications were suppressed, then reset (issue #25)."""
     global _suppressed
-    if not _suppressed or not _enabled():
+    if not _suppressed:
+        return
+    if not _enabled():
+        _suppressed = 0  # channels were switched off: nothing to summarize later
         return
     if time.monotonic() - _window_start < 60:
         return
     count, _suppressed = _suppressed, 0
+    _sent_times.append(time.monotonic())  # the summary counts toward the per-minute budget
     summary = {"id": f"suppressed-{int(time.time())}", "severity": "critical",
                "device_name": "NetVision OT",
                "message": f"{count} more alert notification(s) were suppressed in the last minute "

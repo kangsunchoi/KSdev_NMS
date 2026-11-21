@@ -26,9 +26,14 @@ _SERVER = None
 if not os.environ.get("REACT_APP_BACKEND_URL"):
     os.environ["MONGO_URL"] = os.environ.get("TEST_MONGO_URL", "mongomock://local")
     os.environ["DB_NAME"] = os.environ.get("TEST_DB_NAME", "netvision_test")
-    os.environ.setdefault("SIMULATION_MODE", "true")
-    os.environ.setdefault("AUTH_ENABLED", "false")
-    os.environ.setdefault("CORS_ORIGINS", "*")
+    # Force test-safe values. A developer's backend/.env must not leak into tests
+    # (load_dotenv never overrides keys that already exist, even empty ones):
+    # no real Slack/Telegram sends, no ingest token, auth off, simulation on.
+    for _k in ("SLACK_WEBHOOK_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "INGEST_TOKEN", "AUTH_SECRET"):
+        os.environ[_k] = ""
+    os.environ["SIMULATION_MODE"] = "true"
+    os.environ["AUTH_ENABLED"] = "false"
+    os.environ["CORS_ORIGINS"] = "*"
     _port = _free_port()
     os.environ["REACT_APP_BACKEND_URL"] = f"http://127.0.0.1:{_port}"
 

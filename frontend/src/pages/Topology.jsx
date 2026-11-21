@@ -54,6 +54,148 @@ const saveLinkStyle = (v) => {
   }
 };
 
+// Cytoscape stylesheet, split around the optional taxi-edge override so the
+// override keeps its original position (after the base edge rule, before the
+// edge-label / kind rules). Module constants => stable references.
+const BASE_STYLESHEET_HEAD = [
+  {
+    selector: "node",
+    style: {
+      "background-color": "data(bg)",
+      "border-color": "data(border)",
+      "border-width": 2,
+      shape: "data(shape)",
+      label: "data(label)",
+      color: "#f8f9fa",
+      "font-family": "JetBrains Mono, monospace",
+      "font-size": 10,
+      "text-valign": "bottom",
+      "text-margin-y": 6,
+      "text-outline-color": "#1a1a2e",
+      "text-outline-width": 2,
+      width: 36,
+      height: 36,
+    },
+  },
+  { selector: "node[type = 'switch']", style: { width: 56, height: 30 } },
+  { selector: "node[type = 'plc']", style: { width: 44, height: 40 } },
+  {
+    selector: "node[?is_zone]",
+    style: {
+      "background-color": "#16213e",
+      "background-opacity": 0.45,
+      "border-color": "#2a3b55",
+      "border-width": 1,
+      "border-style": "dashed",
+      shape: "round-rectangle",
+      label: "data(label)",
+      color: "#16c79a",
+      "font-size": 11,
+      "font-family": "JetBrains Mono, monospace",
+      "text-valign": "top",
+      "text-halign": "left",
+      "text-margin-y": 6,
+      "text-margin-x": 10,
+      "text-transform": "uppercase",
+      "padding-top": "16px",
+      "padding-bottom": "12px",
+      "padding-left": "12px",
+      "padding-right": "12px",
+    },
+  },
+  {
+    selector: "node:selected",
+    style: {
+      "border-color": "#16c79a",
+      "border-width": 4,
+      "overlay-color": "#16c79a",
+      "overlay-opacity": 0.18,
+      "overlay-padding": 8,
+    },
+  },
+  {
+    selector: "edge",
+    style: {
+      width: 1.2,
+      "line-color": "#2a3b55",
+      "target-arrow-color": "#2a3b55",
+      "curve-style": "bezier",
+    },
+  },
+];
+
+const TAXI_EDGE_STYLE = [
+  {
+    selector: "edge",
+    style: {
+      "curve-style": "taxi",
+      // breadthfirst lays out top-down, so route vertical-first
+      "taxi-direction": "vertical",
+      "taxi-turn": "50%",
+      "taxi-turn-min-distance": 8,
+    },
+  },
+];
+
+const BASE_STYLESHEET_TAIL = [
+  {
+    // LLDP/CDP port label, e.g. "Gi0/1→eth0" (empty labels are skipped)
+    selector: "edge[?label]",
+    style: {
+      label: "data(label)",
+      color: "#16c79a",
+      "font-family": "JetBrains Mono, monospace",
+      "font-size": 9,
+      "text-rotation": "autorotate",
+      "text-background-color": "#16213e",
+      "text-background-opacity": 0.9,
+      "text-background-padding": "2px",
+      "text-background-shape": "roundrectangle",
+      "text-border-color": "#2a3b55",
+      "text-border-width": 1,
+      "text-border-opacity": 1,
+      // hide when zoomed far out (rendered size < 6px)
+      "min-zoomed-font-size": 6,
+    },
+  },
+  {
+    selector: "edge[kind = 'unmanaged']",
+    style: { "line-style": "dashed", "line-color": "#64748b", "target-arrow-shape": "none" },
+  },
+  {
+    selector: "edge[kind = 'asset']",
+    style: { "line-style": "dotted", "line-color": "#0e7490", width: 1 },
+  },
+  {
+    selector: "node[?is_segment]",
+    style: {
+      "background-opacity": 0.3,
+      "border-style": "dashed",
+      "border-color": "#94a3b8",
+      shape: "round-rectangle",
+      width: 54,
+      height: 34,
+      "font-size": 9,
+    },
+  },
+  {
+    selector: "node[?is_asset]",
+    style: { width: 24, height: 24, "font-size": 9 },
+  },
+];
+
+// Stable layout reference. react-cytoscapejs runs it once on mount; later
+// re-runs happen only when the node set changes (see effect in Topology).
+const LAYOUT = { name: "breadthfirst", directed: true, padding: 30, spacingFactor: 1.1 };
+
+// Sorted node ids — changes only when nodes are added or removed.
+const nodeSignature = (elements) =>
+  elements
+    .filter((el) => el.data && el.data.source == null)
+    .map((el) => el.data.id)
+    .sort()
+    .join("|");
+
 export default function Topology() {
   const { t } = useI18n();
   const { data, isLoading } = useQuery({
@@ -116,8 +258,24 @@ export default function Topology() {
         }
       });
     });
-    cy.layout({ name: "breadthfirst", directed: true, padding: 30, spacingFactor: 1.1 }).run();
+    // No re-layout here: collapsing only hides nodes, so a dragged layout is kept (#32).
   }, [collapsedZones, elements]);
+
+  // Re-run the layout only when the node set changes (devices added/removed),
+  // not on every data refresh, selection or link-style toggle (#32). The very
+  // first layout of each Cytoscape instance is done by react-cytoscapejs on
+  // mount via the `layout` prop, so a new instance is only recorded here.
+  const nodeSig = useMemo(() => nodeSignature(elements), [elements]);
+  const layoutRef = useRef({ cy: null, sig: null });
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy || cy.destroyed()) return;
+    const last = layoutRef.current;
+    if (last.cy === cy && last.sig !== nodeSig) {
+      cy.layout(LAYOUT).run();
+    }
+    layoutRef.current = { cy, sig: nodeSig };
+  }, [nodeSig]);
 
   useEffect(() => {
     const cy = cyRef.current;
@@ -151,128 +309,16 @@ export default function Topology() {
     });
   };
 
-  const stylesheet = [
-    {
-      selector: "node",
-      style: {
-        "background-color": "data(bg)",
-        "border-color": "data(border)",
-        "border-width": 2,
-        shape: "data(shape)",
-        label: "data(label)",
-        color: "#f8f9fa",
-        "font-family": "JetBrains Mono, monospace",
-        "font-size": 10,
-        "text-valign": "bottom",
-        "text-margin-y": 6,
-        "text-outline-color": "#1a1a2e",
-        "text-outline-width": 2,
-        width: 36,
-        height: 36,
-      },
-    },
-    { selector: "node[type = 'switch']", style: { width: 56, height: 30 } },
-    { selector: "node[type = 'plc']", style: { width: 44, height: 40 } },
-    {
-      selector: "node[?is_zone]",
-      style: {
-        "background-color": "#16213e",
-        "background-opacity": 0.45,
-        "border-color": "#2a3b55",
-        "border-width": 1,
-        "border-style": "dashed",
-        shape: "round-rectangle",
-        label: "data(label)",
-        color: "#16c79a",
-        "font-size": 11,
-        "font-family": "JetBrains Mono, monospace",
-        "text-valign": "top",
-        "text-halign": "left",
-        "text-margin-y": 6,
-        "text-margin-x": 10,
-        "text-transform": "uppercase",
-        "padding-top": "16px",
-        "padding-bottom": "12px",
-        "padding-left": "12px",
-        "padding-right": "12px",
-      },
-    },
-    {
-      selector: "node:selected",
-      style: {
-        "border-color": "#16c79a",
-        "border-width": 4,
-        "overlay-color": "#16c79a",
-        "overlay-opacity": 0.18,
-        "overlay-padding": 8,
-      },
-    },
-    {
-      selector: "edge",
-      style: {
-        width: 1.2,
-        "line-color": "#2a3b55",
-        "target-arrow-color": "#2a3b55",
-        "curve-style": "bezier",
-      },
-    },
-    ...(linkStyle === "taxi"
-      ? [{
-          selector: "edge",
-          style: {
-            "curve-style": "taxi",
-            // breadthfirst lays out top-down, so route vertical-first
-            "taxi-direction": "vertical",
-            "taxi-turn": "50%",
-            "taxi-turn-min-distance": 8,
-          },
-        }]
-      : []),
-    {
-      // LLDP/CDP port label, e.g. "Gi0/1→eth0" (empty labels are skipped)
-      selector: "edge[?label]",
-      style: {
-        label: "data(label)",
-        color: "#16c79a",
-        "font-family": "JetBrains Mono, monospace",
-        "font-size": 9,
-        "text-rotation": "autorotate",
-        "text-background-color": "#16213e",
-        "text-background-opacity": 0.9,
-        "text-background-padding": "2px",
-        "text-background-shape": "roundrectangle",
-        "text-border-color": "#2a3b55",
-        "text-border-width": 1,
-        "text-border-opacity": 1,
-        // hide when zoomed far out (rendered size < 6px)
-        "min-zoomed-font-size": 6,
-      },
-    },
-    {
-      selector: "edge[kind = 'unmanaged']",
-      style: { "line-style": "dashed", "line-color": "#64748b", "target-arrow-shape": "none" },
-    },
-    {
-      selector: "edge[kind = 'asset']",
-      style: { "line-style": "dotted", "line-color": "#0e7490", width: 1 },
-    },
-    {
-      selector: "node[?is_segment]",
-      style: {
-        "background-opacity": 0.3,
-        "border-style": "dashed",
-        "border-color": "#94a3b8",
-        shape: "round-rectangle",
-        width: 54,
-        height: 34,
-        "font-size": 9,
-      },
-    },
-    {
-      selector: "node[?is_asset]",
-      style: { width: 24, height: 24, "font-size": 9 },
-    },
-  ];
+  // Memoized so react-cytoscapejs (shallow diff per stylesheet entry) only
+  // re-applies the style when the link style actually changes (#32).
+  const stylesheet = useMemo(
+    () => [
+      ...BASE_STYLESHEET_HEAD,
+      ...(linkStyle === "taxi" ? TAXI_EDGE_STYLE : []),
+      ...BASE_STYLESHEET_TAIL,
+    ],
+    [linkStyle],
+  );
 
   return (
     <div className="p-6 flex flex-col h-screen" data-testid="topology-page">
@@ -282,7 +328,12 @@ export default function Topology() {
           <h1 className="text-[22px] font-semibold tracking-tight">{t("topo.title")}</h1>
         </div>
         <div className="flex items-center gap-4 text-[11px] font-mono">
-          <div className="flex items-center gap-2" data-testid="topology-link-style">
+          <div
+            className="flex items-center gap-2"
+            role="group"
+            aria-label={t("topo.linkStyle")}
+            data-testid="topology-link-style"
+          >
             <span className="text-nv-muted uppercase tracking-wider">{t("topo.linkStyle")}</span>
             <button
               type="button"
@@ -369,7 +420,7 @@ export default function Topology() {
                 cy={(cy) => { cyRef.current = cy; }}
                 elements={elements}
                 style={{ width: "100%", height: "100%" }}
-                layout={{ name: "breadthfirst", directed: true, padding: 30, spacingFactor: 1.1 }}
+                layout={LAYOUT}
                 stylesheet={stylesheet}
                 wheelSensitivity={0.3}
               />

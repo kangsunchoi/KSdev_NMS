@@ -1,4 +1,4 @@
-"""Collector ingestion: ping/SNMP samples, generic metrics, interfaces, FDB, assets."""
+"""Collector ingestion: ping/SNMP samples, generic metrics, interfaces, FDB, ARP, assets."""
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 import uuid
@@ -9,8 +9,8 @@ from netvision import config, ws
 from netvision.alerts import _create_alert, _resolve_device_alerts
 from netvision.database import _apply_updates, db
 from netvision.devices import _cache_add, _find_device, _prefetch_devices, _resolve_cached
-from netvision.helpers import _normalize_ip, _normalize_ts, _utc_now_iso, _valid_ip
-from netvision.models import (AlertSeverity, AssetsPayload, Device, FdbPayload, IngestPayload,
+from netvision.helpers import _is_placeholder, _normalize_ip, _normalize_mac, _normalize_ts, _utc_now_iso, _valid_ip
+from netvision.models import (AlertSeverity, ArpPayload, AssetsPayload, Device, FdbPayload, IngestPayload,
                               InterfacesPayload, MetricSample, MetricsPayload)
 from netvision.monitoring import COLLECTOR_ALERT_ID, _derive_status, _metric_doc, _recover_if_stale, _worsen_message
 
@@ -107,6 +107,61 @@ async def ingest_fdb(payload: FdbPayload):
         upsert=True,
     )
     return {"matched": True, "device_id": dev["id"], "ports": len(ports)}
+
+
+# ---------------- ARP (IP <-> MAC) for L2 link inference (issue #48) ---------------- #
+# Source = an L3 gateway's ARP table (ipNetToMediaPhysAddress) or the collector
+# host's own neighbor table (`ip neigh` after a ping sweep). Rows are upserted per
+# (source_id, ip, mac) with last_seen; nothing here changes devices or topology.
+
+ARP_SOURCE_COLLECTOR = "collector"
+_ARP_INVALID_REPORT_CAP = 100
+
+
+def _arp_entry_error(e) -> Optional[str]:
+    if not isinstance(e, dict):
+        return "entry must be an object"
+    ip = e.get("ip")
+    if not isinstance(ip, str) or not _valid_ip(ip) or _is_placeholder(ip):
+        return "invalid ip"
+    if _normalize_mac(e.get("mac")) is None:
+        return "invalid mac"
+    return None
+
+
+@router.post("/arp")
+async def ingest_arp(payload: ArpPayload):
+    """Upsert ARP rows. Invalid rows are skipped and reported back (index + reason)."""
+    if payload.source == ARP_SOURCE_COLLECTOR:
+        source_id, source_type = ARP_SOURCE_COLLECTOR, "collector"
+    else:
+        dev = await _find_device(payload.device_id, payload.ip, payload.name)
+        if not dev:
+            return {"matched": False, "ip": payload.ip, "received": len(payload.entries), "accepted": 0}
+        source_id, source_type = dev["id"], "gateway"
+    now = _utc_now_iso()
+    invalid = []
+    rows = {}
+    for i, e in enumerate(payload.entries):
+        err = _arp_entry_error(e)
+        if err:
+            raw = e if isinstance(e, dict) else {}
+            invalid.append({"index": i, "reason": err, "ip": raw.get("ip"), "mac": raw.get("mac")})
+            continue
+        vlan, ifname = e.get("vlan"), e.get("ifname")
+        rows[(_normalize_ip(e["ip"]), _normalize_mac(e["mac"]))] = {
+            "ifname": str(ifname) if ifname is not None else None,
+            "vlan": str(vlan) if vlan is not None else None,
+        }
+    pairs = []
+    for (ip, mac), extra in rows.items():
+        key = {"source_id": source_id, "ip": ip, "mac": mac}
+        pairs.append((key, {"$set": {**key, "source_type": source_type, **extra, "last_seen": now},
+                            "$setOnInsert": {"first_seen": now}}))
+    await _apply_updates(db.arp_entries, pairs, ordered=False, upsert=True)
+    return {"matched": True, "source_id": source_id, "source_type": source_type,
+            "received": len(payload.entries), "accepted": len(rows),
+            "invalid_count": len(invalid), "invalid": invalid[:_ARP_INVALID_REPORT_CAP]}
 
 
 @router.post("/assets")

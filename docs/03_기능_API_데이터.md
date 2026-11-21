@@ -91,11 +91,13 @@
 | POST | `/discovery/register` | `{"ips":["192.168.0.10", ".."]}` | 예 |
 | POST | `/fdb` | `{"ip":"..","entries":[{"port":"Gi1/0/5","mac":"00:11:22:33:44:01"}]}` | 아니오 |
 | POST | `/assets` | `{"assets":[{"parent_ip":"..","name":"IO-Module-1","asset_type":"io","detail":"16DI/16DO"}]}` | 아니오 |
+| POST | `/arp` | 게이트웨이: `{"ip":"..","entries":[{"ip":"10.0.0.11","mac":"0011.2233.4401","ifname":"Vlan10","vlan":10}]}` / 수집 서버: `{"source":"collector","entries":[...]}` | 예 (`/fdb`와 같은 규칙) |
 
 - `ingest` 필드: `reachable`(false면 offline), `latency_ms`, `packet_loss`, `cpu_pct`, `uptime_pct`, `status`, `ts`. 빠진 필드는 이전 값 유지
 - `ingest?auto_create=true`: 미등록 IP를 최소 장비로 자동 등록
 - `metrics`: 최신값(`device_kv`) + 시계열(`unified_metrics`, 24h TTL). 네트워크 상태는 건드리지 않음
 - `interfaces`: 연속 두 샘플의 카운터 차이로 bps 계산. 음수 델타(32비트 카운터 wrap)는 무시
+- `arp` (2026-11-21 추가, 이슈 #48 1단계, 출처: `backend/netvision/routes/ingest.py`): MAC은 `aa:bb:cc:dd:ee:ff`로 정규화(`:`·`-`·공백·`.`(Cisco)·구분자 없음, 대소문자 무관), IP는 정규형. `(source_id, ip, mac)` 단위로 upsert하고 `last_seen` 갱신. 잘못된 행은 건너뛰고 `invalid`(index, reason)로 응답. 게이트웨이를 못 찾으면 `matched:false`
 
 ### 3.4 디스커버리, 링크, 자산
 
@@ -108,6 +110,7 @@
 | GET | `/assets` | 논리 자산 목록 |
 | POST | `/assets/reset` | 논리 자산 전체 삭제 |
 | GET | `/topology` | 노드 + 엣지 (parent_id 트리 + 링크 + 미관리 세그먼트 + 자산) |
+| GET | `/topology/inferred` | L2 추정 결과 디버그(읽기 전용). `L2_INFERENCE_ENABLED=true`일 때만, 꺼져 있으면 404. 응답: `enabled, endpoints, links(kind="inferred"), uplinks, excluded, segments, ambiguities, stats`. 2026-11-21 추가 (이슈 #48 2단계, 출처: `backend/netvision/inference.py`) |
 
 ### 3.5 시뮬, 목업
 
@@ -148,6 +151,7 @@
 | `links` | LLDP/CDP 이웃 링크 | 영구 |
 | `device_fdb` | 스위치 포트별 MAC 목록 | 영구 |
 | `assets` | 논리 자산 (PLC 하위 IO 등) | 영구 |
+| `arp_entries` | ARP 매핑 (`source_id`=게이트웨이 장비 id 또는 `collector`, `ip`, `mac`, `ifname`, `vlan`, `first_seen`, `last_seen`). 게이트웨이 장비 삭제 시 함께 삭제. 2026-11-21 추가 (이슈 #48) | 영구 |
 | `discovery` | 디스커버리 설정 (문서 1개, id=`default`) | 영구 |
 | `users` | 사용자 (인증 ON일 때) | 영구 |
 | `audit` | 감사 로그 | 30일 TTL |

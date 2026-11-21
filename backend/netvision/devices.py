@@ -16,6 +16,8 @@ _DEVICE_REF_COLLECTIONS = [
     ("device_interfaces", "device_id"),
     ("device_fdb", "device_id"),
     ("assets", "parent_device_id"),
+    # gateway-sourced ARP rows; collector-sourced rows use source_id="collector" (#48)
+    ("arp_entries", "source_id"),
 ]
 
 

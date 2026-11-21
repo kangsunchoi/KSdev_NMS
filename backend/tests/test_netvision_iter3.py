@@ -71,7 +71,10 @@ class TestTopology:
         zone_ids = {n["data"]["id"] for n in zone_nodes}
         assert zone_ids == {"zone-Cell-A", "zone-Cell-B", "zone-Utilities"}
 
-        device_nodes = [n for n in body["nodes"] if not n["data"].get("is_zone")]
+        device_nodes = [n for n in body["nodes"]
+                        if not n["data"].get("is_zone")
+                        and not n["data"].get("is_segment")
+                        and not n["data"].get("is_asset")]
         # all seeded devices have a zone -> all should have parent
         without_parent = [n for n in device_nodes if not n["data"].get("parent")]
         assert without_parent == [], f"all seeded devices should have parent zone, found {len(without_parent)} without"

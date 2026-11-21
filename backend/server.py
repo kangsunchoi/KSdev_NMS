@@ -33,7 +33,12 @@ RCA_ENABLED = str(os.environ.get("RCA_ENABLED", "true")).strip().lower() in ("1"
 UNMANAGED_MIN_MACS = int(os.environ.get("UNMANAGED_MIN_MACS", "2"))
 
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
+if mongo_url.startswith("mongomock://"):
+    # Test-only in-memory MongoDB (pip install mongomock-motor). Never used in production.
+    from mongomock_motor import AsyncMongoMockClient
+    client = AsyncMongoMockClient()
+else:
+    client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 app = FastAPI(title="NetVision OT API")

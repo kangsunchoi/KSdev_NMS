@@ -140,7 +140,7 @@
 | 컬렉션 | 용도 | 보관 |
 |---|---|---|
 | `devices` | 장비 인벤토리 | 영구 |
-| `alerts` | 알람 (`correlated_to` 필드 포함 가능) | 확인된 알람은 2시간 지나면 삭제 (5초 루프) |
+| `alerts` | 알람 (`correlated_to`, `state`=active/acknowledged/resolved, `acknowledged_at`, `resolved_at`) | 확인·해소된 알람은 닫힌 시점부터 `ALERT_RETENTION_DAYS`(기본 30일) 뒤 삭제. 2026-11-21 스프린트 2에서 변경(이전: 확인 후 2시간) |
 | `device_metrics` | 네트워크 지표 시계열 | 24h TTL |
 | `device_kv` | 범용 지표 최신값 | 영구 |
 | `unified_metrics` | 범용 지표 시계열 | 24h TTL |

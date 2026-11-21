@@ -35,6 +35,15 @@ export default function Dashboard() {
 
   return (
     <div className="p-6" data-testid="dashboard-page">
+      {s.collector_stale && (
+        <div
+          className="mb-4 px-3 py-2 border border-[#e74c3c] text-[#e74c3c] bg-[#e74c3c]/10 text-[12px] font-mono"
+          role="alert"
+          data-testid="dashboard-collector-stale"
+        >
+          {t("dash.collectorStale")}: {s.last_ingest_ts ? new Date(s.last_ingest_ts).toLocaleString() : t("dash.never")}
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between mb-5">
         <div>

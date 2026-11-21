@@ -32,6 +32,14 @@ RCA_ENABLED = str(os.environ.get("RCA_ENABLED", "true")).strip().lower() in ("1"
 # treated as an "unmanaged segment" (a dumb hub or daisy-chain). Default 2.
 UNMANAGED_MIN_MACS = int(os.environ.get("UNMANAGED_MIN_MACS", "2"))
 
+# Stale detection (issue #9): in live mode, a device whose last_seen is older than
+# this many seconds is marked offline ("no data from collector"). 0 disables.
+# Default 180s = 6 missed cycles of the 30s Node-RED ping flow.
+STALE_AFTER_SEC = int(os.environ.get("STALE_AFTER_SEC", "180"))
+# Alert history retention (issue #10). Resolved/acknowledged alerts are kept this
+# many days (previously deleted after 2 hours).
+ALERT_RETENTION_DAYS = int(os.environ.get("ALERT_RETENTION_DAYS", "30"))
+
 mongo_url = os.environ['MONGO_URL']
 if mongo_url.startswith("mongomock://"):
     # Test-only in-memory MongoDB (pip install mongomock-motor). Never used in production.
@@ -58,6 +66,8 @@ _SIM_ENV = os.environ.get("SIMULATION_MODE", "true").strip().lower() in ("1", "t
 _SIM_OVERRIDE: Optional[bool] = None
 # Timestamp of the last successful ingest (for status endpoint)
 _LAST_INGEST_TS: Optional[str] = None
+# Process start time: reference for "collector stale" before the first ingest.
+_STARTED_AT = datetime.now(timezone.utc)
 
 
 def sim_on() -> bool:
@@ -106,6 +116,7 @@ class Device(DeviceBase):
     cpu_pct: float = 0.0
     last_seen: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     parent_id: Optional[str] = None  # for topology hierarchy
+    stale: bool = False  # offline because the collector stopped sending data (issue #9)
 
 
 class Alert(BaseModel):
@@ -115,7 +126,11 @@ class Alert(BaseModel):
     device_name: str
     severity: AlertSeverity
     message: str
-    acknowledged: bool = False
+    acknowledged: bool = False  # kept for older clients: True once acknowledged OR resolved
+    # Lifecycle (issue #10): active -> acknowledged (operator) / resolved (device recovered)
+    state: Literal["active", "acknowledged", "resolved"] = "active"
+    acknowledged_at: Optional[str] = None
+    resolved_at: Optional[str] = None
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     # RCA: id of the parent/upstream device whose outage likely caused this alert.
     # None = standalone / root-cause alert. Optional so older clients ignore it.
@@ -205,6 +220,34 @@ def _build_topology() -> List[Device]:
 
 # ---------------- HELPERS ---------------- #
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_ts(value: Optional[str]) -> Optional[datetime]:
+    """Parse an ISO-8601 timestamp into an aware UTC datetime. None if invalid."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)  # naive collector time is treated as UTC
+    return dt.astimezone(timezone.utc)
+
+
+def _normalize_ts(value: Optional[str]) -> str:
+    """Collector timestamps are stored as UTC ISO strings with the SAME format as
+    server timestamps, so string range queries/sorts stay correct (issue #12).
+    Invalid or future (>60s ahead) values fall back to server time."""
+    now = datetime.now(timezone.utc)
+    dt = _parse_ts(value)
+    if dt is None or dt > now + timedelta(seconds=60):
+        return now.isoformat()
+    return dt.isoformat()
+
+
 def _serialize(doc: dict) -> dict:
     doc.pop("_id", None)
     return doc
@@ -215,6 +258,9 @@ ALERT_DEBOUNCE_SEC = 60
 
 async def _create_alert(device: dict, severity: AlertSeverity, message: str, force: bool = False):
     """Insert alert unless a same-device-same-severity alert exists in the last ALERT_DEBOUNCE_SEC."""
+    if device["id"] == "collector":  # COLLECTOR_ALERT_ID: keep a single open alert
+        if await db.alerts.find_one({"device_id": "collector", "acknowledged": False}, {"_id": 0, "id": 1}):
+            return None
     if not force:
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ALERT_DEBOUNCE_SEC)).isoformat()
         recent = await db.alerts.find_one(
@@ -294,11 +340,17 @@ async def _resolve_device_alerts(device_id: str) -> int:
     Shared by both the simulator and the live ingestion path so recovery
     behaves identically regardless of where the data came from.
     """
+    now = _utc_now_iso()
     result = await db.alerts.update_many(
-        {"device_id": device_id, "acknowledged": False},
-        {"$set": {"acknowledged": True}},
+        {"device_id": device_id, "state": {"$in": ["active", "acknowledged"]}, "resolved_at": None},
+        {"$set": {"acknowledged": True, "state": "resolved", "resolved_at": now}},
     )
-    return result.modified_count
+    # legacy rows created before the lifecycle fields existed
+    legacy = await db.alerts.update_many(
+        {"device_id": device_id, "acknowledged": False, "state": {"$exists": False}},
+        {"$set": {"acknowledged": True, "state": "resolved", "resolved_at": now}},
+    )
+    return result.modified_count + legacy.modified_count
 
 
 async def _seed_phase4_demo(devices: List[dict]):
@@ -645,9 +697,13 @@ async def list_alerts(limit: int = 200):
 
 @api_router.post("/alerts/{alert_id}/acknowledge", response_model=Alert)
 async def acknowledge_alert(alert_id: str):
-    result = await db.alerts.update_one({"id": alert_id}, {"$set": {"acknowledged": True}})
-    if result.matched_count == 0:
+    if not await db.alerts.find_one({"id": alert_id}, {"_id": 0, "id": 1}):
         raise HTTPException(404, "Alert not found")
+    # only an ACTIVE alert becomes "acknowledged"; acknowledged/resolved ones are unchanged
+    await db.alerts.update_one(
+        {"id": alert_id, "state": "active"},
+        {"$set": {"acknowledged": True, "state": "acknowledged", "acknowledged_at": _utc_now_iso()}},
+    )
     doc = await db.alerts.find_one({"id": alert_id}, {"_id": 0})
     return doc
 
@@ -976,7 +1032,7 @@ async def ingest_metrics(payload: MetricsPayload):
         if not dev:
             unmatched.append(s.device_id or s.ip or s.name or s.metric_name)
             continue
-        ts = s.ts or now
+        ts = _normalize_ts(s.ts) if s.ts else now
         docs.append({
             "device_id": dev["id"], "metric_name": s.metric_name,
             "value": float(s.value), "unit": s.unit or "",
@@ -1069,6 +1125,7 @@ async def dashboard_summary():
         "health_score": health,
         "avg_latency_ms": avg_latency,
         "avg_packet_loss": avg_packet_loss,
+        **_collector_status(),
     }
 
 
@@ -1148,7 +1205,8 @@ async def bulk_ack(payload: BulkAckPayload):
     q: dict = {"acknowledged": False}
     if payload.ids:
         q["id"] = {"$in": payload.ids}
-    result = await db.alerts.update_many(q, {"$set": {"acknowledged": True}})
+    result = await db.alerts.update_many(
+        q, {"$set": {"acknowledged": True, "state": "acknowledged", "acknowledged_at": _utc_now_iso()}})
     return {"acknowledged": result.modified_count}
 
 
@@ -1237,16 +1295,23 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
         uptime = float(s.uptime_pct) if s.uptime_pct is not None else float(device.get("uptime_pct", 100.0))
 
         # determine new status
+        was_stale = bool(device.get("stale"))
         if s.status is not None:
             new_status = s.status
         elif s.reachable is False:
             new_status = "offline"
         else:
-            # allow recovery: if device was offline and is now reachable, re-evaluate from metrics
-            base = "online" if (s.reachable is True and prev_status == "offline") else prev_status
+            # allow recovery: if device was offline and is now reachable, re-evaluate from metrics.
+            # A device that went offline only because data STOPPED (stale) recovers on any data.
+            recovering = prev_status == "offline" and (s.reachable is True or was_stale)
+            base = "online" if recovering else prev_status
             new_status = _derive_status(base, base, latency, ploss)
 
-        now_iso = s.ts or datetime.now(timezone.utc).isoformat()
+        # last_seen / stale judgement always use SERVER receive time: a collector with a
+        # wrong clock or delayed batches must not make devices flap. The collector's own
+        # timestamp is kept only for the metric history point.
+        now_iso = _utc_now_iso()
+        sample_ts = _normalize_ts(s.ts)
         await db.devices.update_one(
             {"id": device["id"]},
             {"$set": {
@@ -1256,6 +1321,7 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
                 "uptime_pct": round(uptime, 2),
                 "last_seen": now_iso,
                 "status": new_status,
+                "stale": False,
             }},
         )
 
@@ -1268,13 +1334,14 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
         if prev_status != "online" and new_status == "online":
             await _resolve_device_alerts(device["id"])
 
-        metric_docs.append(_metric_doc(device["id"], now_iso, latency, ploss, cpu, new_status))
+        metric_docs.append(_metric_doc(device["id"], sample_ts, latency, ploss, cpu, new_status))
         updated += 1
 
     if metric_docs:
         await db.device_metrics.insert_many(metric_docs)
 
     _LAST_INGEST_TS = datetime.now(timezone.utc).isoformat()
+    await _resolve_device_alerts(COLLECTOR_ALERT_ID)  # collector is alive again
 
     # push fresh snapshot to dashboards
     if ws_manager.clients:
@@ -1370,8 +1437,8 @@ async def _build_snapshot() -> dict:
     online = sum(1 for d in devices if d["status"] == "online")
     warning = sum(1 for d in devices if d["status"] == "warning")
     critical = sum(1 for d in devices if d["status"] in ("critical", "offline"))
-    open_alerts = sum(1 for a in alerts if not a["acknowledged"])
-    critical_alerts = sum(1 for a in alerts if not a["acknowledged"] and a["severity"] == "critical")
+    open_alerts = await db.alerts.count_documents({"acknowledged": False})
+    critical_alerts = await db.alerts.count_documents({"acknowledged": False, "severity": "critical"})
     if total == 0:
         health = 100
     else:
@@ -1386,6 +1453,7 @@ async def _build_snapshot() -> dict:
             "total": total, "online": online, "warning": warning, "critical": critical,
             "open_alerts": open_alerts, "critical_alerts": critical_alerts,
             "health_score": health, "avg_latency_ms": avg_lat, "avg_packet_loss": avg_pl,
+            **_collector_status(),
         },
         "devices": devices,
         "alerts": alerts,
@@ -1448,6 +1516,56 @@ async def _simulate_tick():
         await db.device_metrics.insert_many(metric_docs)
 
 
+def _collector_status() -> dict:
+    """Is the collector (Node-RED) still sending? Only meaningful in live mode."""
+    stale = False
+    if not sim_on() and STALE_AFTER_SEC > 0:
+        last = _parse_ts(_LAST_INGEST_TS)
+        ref = last or _STARTED_AT
+        stale = (datetime.now(timezone.utc) - ref).total_seconds() > STALE_AFTER_SEC
+    return {"collector_stale": stale, "last_ingest_ts": _LAST_INGEST_TS}
+
+
+COLLECTOR_ALERT_ID = "collector"  # pseudo device id for the single "collector stopped" alert
+
+
+async def _stale_sweep() -> int:
+    """Live mode: mark devices with no data for STALE_AFTER_SEC as offline (issue #9).
+
+    - Ages are measured from max(last_seen, process start): after a restart/outage
+      of the backend itself, devices get a full STALE_AFTER_SEC grace period.
+    - If the WHOLE collector is silent, raise one "collector stopped" alert instead
+      of one alert per device (one root cause).
+    """
+    if sim_on() or STALE_AFTER_SEC <= 0:
+        return 0
+    now = datetime.now(timezone.utc)
+    collector_down = _collector_status()["collector_stale"]
+    marked = 0
+    async for d in db.devices.find({"status": {"$ne": "offline"}}, {"_id": 0}):
+        seen = _parse_ts(d.get("last_seen"))
+        ref = max(seen, _STARTED_AT) if seen else _STARTED_AT
+        if (now - ref).total_seconds() <= STALE_AFTER_SEC:
+            continue
+        # filter on the last_seen we read: if an ingest landed meanwhile, do nothing
+        res = await db.devices.update_one(
+            {"id": d["id"], "status": {"$ne": "offline"}, "last_seen": d.get("last_seen")},
+            {"$set": {"status": "offline", "stale": True}},
+        )
+        if res.modified_count:
+            marked += 1
+            if not collector_down:
+                age = int((now - (seen or _STARTED_AT)).total_seconds())
+                await _create_alert(d, "critical", f"{d['name']}: no data from collector for {age}s")
+    if collector_down:
+        last = _LAST_INGEST_TS or "never"
+        await _create_alert(
+            {"id": COLLECTOR_ALERT_ID, "name": "Collector (Node-RED)"}, "critical",
+            f"Collector (Node-RED): no data received since {last}", force=False,
+        )
+    return marked
+
+
 async def metrics_loop():
     """Runs every 5s. Generates data only in simulation mode; always purges old
     acknowledged alerts and broadcasts a fresh snapshot so dashboards stay live
@@ -1461,9 +1579,16 @@ async def metrics_loop():
             if sim_on():
                 await _simulate_tick()
 
-            # purge very old acknowledged alerts (>2h) — applies to both modes
-            cutoff = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-            await db.alerts.delete_many({"acknowledged": True, "timestamp": {"$lt": cutoff}})
+            await _stale_sweep()
+
+            # purge closed (acknowledged/resolved) alerts older than the retention period
+            # (counted from when the alert was CLOSED, not created)
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=ALERT_RETENTION_DAYS)).isoformat()
+            await db.alerts.delete_many({"acknowledged": True, "$or": [
+                {"resolved_at": {"$lt": cutoff}},
+                {"resolved_at": None, "acknowledged_at": {"$lt": cutoff}},
+                {"resolved_at": None, "acknowledged_at": None, "timestamp": {"$lt": cutoff}},
+            ]})
 
             # Broadcast snapshot to WS clients
             if ws_manager.clients:
@@ -1511,8 +1636,17 @@ async def startup():
         await db.unified_metrics.create_index("ts_dt", expireAfterSeconds=_METRIC_TTL_SEC)
         await db.unified_metrics.create_index([("device_id", 1), ("metric_name", 1), ("ts", 1)])
         await db.device_kv.create_index([("device_id", 1), ("metric_name", 1)], unique=True)
+        # alerts: counted every 5s and on every ingest; history is kept for days now
+        await db.alerts.create_index([("acknowledged", 1), ("severity", 1)])
+        await db.alerts.create_index([("device_id", 1), ("severity", 1), ("timestamp", -1)])
+        await db.alerts.create_index([("timestamp", -1)])
+        await db.alerts.create_index("id", unique=True)
     except Exception as e:
         logger.warning("index create failed: %s", e)
+    # One-time migration: alerts created before the lifecycle fields existed (issue #10)
+    await db.alerts.update_many({"state": {"$exists": False}, "acknowledged": True},
+                                {"$set": {"state": "acknowledged"}})
+    await db.alerts.update_many({"state": {"$exists": False}}, {"$set": {"state": "active"}})
     # Audit indexes (always) + default admin (only when AUTH_ENABLED and no users yet).
     await audit.ensure_indexes(db)
     await auth.ensure_default_admin(db)

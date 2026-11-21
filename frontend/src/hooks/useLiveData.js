@@ -18,7 +18,9 @@ export const useLiveData = () => {
 
     const connect = () => {
       if (stopped) return;
-      socket = new WebSocket(WS_URL);
+      // When auth is on, the backend requires ?token= (WebSockets cannot send headers).
+      const token = localStorage.getItem("nv_token");
+      socket = new WebSocket(token ? `${WS_URL}?token=${encodeURIComponent(token)}` : WS_URL);
       socket.onopen = () => {
         attempt = 0;
         window.__nvWsOpen = true;

@@ -27,6 +27,7 @@ import hmac
 import json
 import base64
 import hashlib
+import re
 import secrets
 import logging
 from datetime import datetime, timezone, timedelta
@@ -65,11 +66,61 @@ ROLE_RANK = {"viewer": 1, "operator": 2, "admin": 3}
 # Paths that never require a user session (login, public config, health, docs).
 _PUBLIC_PREFIXES = ("/api/auth/login", "/api/auth/config", "/docs", "/openapi.json", "/redoc")
 _PUBLIC_EXACT = ("/api/", "/api")
-# Collector ingestion paths guarded by INGEST_TOKEN (not user session).
-_INGEST_PREFIXES = ("/api/ingest", "/api/metrics", "/api/interfaces",
-                    "/api/links", "/api/discovery/register")
-# Admin-only path prefixes.
-_ADMIN_PREFIXES = ("/api/auth/users",)
+# Collector (Node-RED) routes, matched EXACTLY by (method, full path regex).
+# Write routes: guarded by INGEST_TOKEN only (open when INGEST_TOKEN is unset,
+# for backward compatibility with existing flows).
+_COLLECTOR_WRITE = [
+    ("POST", r"/api/ingest"),
+    ("POST", r"/api/metrics"),
+    ("POST", r"/api/interfaces"),
+    ("POST", r"/api/links"),
+    ("POST", r"/api/discovery/register"),
+    ("POST", r"/api/fdb"),
+    ("POST", r"/api/assets"),
+]
+# Routes that are normal user routes, but which the collector also calls
+# (target lists, discovery config, type correction). A valid X-Ingest-Token lets
+# the collector use them even when AUTH_ENABLED=true.
+_COLLECTOR_ALSO = [
+    ("GET", r"/api/devices"),
+    ("GET", r"/api/discovery"),
+    ("PUT", r"/api/discovery"),
+    ("PATCH", r"/api/devices/[^/]+"),
+]
+# Admin-only routes: path prefix (any method).
+_ADMIN_PREFIXES = ("/api/auth/users", "/api/audit")
+# Admin-only destructive / mode-changing routes (method, full path regex).
+_ADMIN_ROUTES = [
+    ("POST", r"/api/mock/(generate|reset)"),
+    ("POST", r"/api/sim/mode"),
+    ("POST", r"/api/devices/cleanup"),
+    ("POST", r"/api/assets/reset"),
+    ("POST", r"/api/links/reset"),
+]
+
+COLLECTOR_USER = {"username": "collector", "role": "collector"}
+
+
+def _match(routes, method: str, path: str) -> bool:
+    return any(m == method and re.fullmatch(rx, path) for m, rx in routes)
+
+
+def has_valid_ingest_token(request) -> bool:
+    """True if INGEST_TOKEN is configured and the request carries it."""
+    if not INGEST_TOKEN:
+        return False
+    return hmac.compare_digest(request.headers.get("x-ingest-token", ""), INGEST_TOKEN)
+
+
+def startup_warnings():
+    """Log configuration risks once at startup (issue #6)."""
+    if not INGEST_TOKEN:
+        logger.warning("INGEST_TOKEN is not set: collector endpoints (/api/ingest, /api/metrics, ...) "
+                       "accept data from anyone on the network. Set INGEST_TOKEN in backend/.env "
+                       "and the X-Ingest-Token header in Node-RED.")
+        if AUTH_ENABLED:
+            logger.warning("AUTH_ENABLED=true without INGEST_TOKEN: Node-RED calls to GET /api/devices, "
+                           "GET/PUT /api/discovery and PATCH /api/devices/{id} will be rejected (401).")
 
 
 # ---------------- password hashing (pbkdf2, stdlib) ---------------- #
@@ -253,31 +304,38 @@ def register_middleware(app, db, audit_module=None):
         if method == "OPTIONS":
             return await call_next(request)
 
-        # 1) Collector ingestion: guarded by INGEST_TOKEN only (independent of AUTH_ENABLED).
-        if any(path.startswith(p) for p in _INGEST_PREFIXES):
-            if INGEST_TOKEN:
-                if request.headers.get("x-ingest-token", "") != INGEST_TOKEN:
-                    return JSONResponse({"detail": "Invalid or missing ingest token"}, status_code=401)
-            # else: open (current behavior)
-            return await _proceed(request, call_next, db, audit_module, user=None)
+        collector = has_valid_ingest_token(request)
+        request.state.collector = collector
 
-        # 2) Auth disabled -> pass everything through (existing behavior preserved).
+        # 1) Collector write routes: guarded by INGEST_TOKEN only (independent of AUTH_ENABLED).
+        if _match(_COLLECTOR_WRITE, method, path):
+            if INGEST_TOKEN and not collector:
+                return JSONResponse({"detail": "Invalid or missing ingest token"}, status_code=401)
+            return await _proceed(request, call_next, db, audit_module, user=COLLECTOR_USER)
+
+        # 2) Collector calling one of the shared user routes with a valid token.
+        if collector and _match(_COLLECTOR_ALSO, method, path):
+            return await _proceed(request, call_next, db, audit_module, user=COLLECTOR_USER)
+
+        # 3) Auth disabled -> pass everything through (existing behavior preserved).
         if not AUTH_ENABLED:
             return await _proceed(request, call_next, db, audit_module, user=None)
 
-        # 3) Public paths (login/config/health/docs).
+        # 4) Public paths (login/config/health/docs).
         if path in _PUBLIC_EXACT or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
             return await _proceed(request, call_next, db, audit_module, user=None)
 
-        # 4) Everything else requires a valid session token.
+        # 5) Everything else requires a valid session token.
         token = _bearer(request)
         claims = verify_token(token) if token else None
         if not claims:
             return JSONResponse({"detail": "Authentication required"}, status_code=401)
 
         rank = ROLE_RANK.get(claims["role"], 0)
-        # admin-only paths
-        if any(path.startswith(p) for p in _ADMIN_PREFIXES) and rank < ROLE_RANK["admin"]:
+        # admin-only paths / destructive routes
+        is_admin_route = (any(path.startswith(p) for p in _ADMIN_PREFIXES)
+                          or _match(_ADMIN_ROUTES, method, path))
+        if is_admin_route and rank < ROLE_RANK["admin"]:
             return JSONResponse({"detail": "Admin privileges required"}, status_code=403)
         # method-based RBAC
         if rank < _required_rank(method):

@@ -64,6 +64,7 @@ export const fetchDeviceSeries = (id, metric, hours = 24) =>
 export const fetchDeviceInterfaces = (id) =>
   api.get(`/devices/${id}/interfaces`).then((r) => r.data);
 
+export const fetchSimMode = () => api.get("/sim/mode").then((r) => r.data);
 export const generateMock = () => api.post("/mock/generate").then((r) => r.data);
 export const resetAll = () => api.post("/mock/reset").then((r) => r.data);
 

@@ -1075,7 +1075,9 @@ async def dashboard_summary():
 # Mock data generator (manual)
 def _require_sim_mode():
     """Mock data endpoints wipe collections; never allow them in live mode (issue #5)."""
-    if not sim_on():
+    # Both the persistent .env setting AND the runtime mode must be simulation:
+    # POST /api/sim/mode alone must not unlock wiping a live database.
+    if not (_SIM_ENV and sim_on()):
         raise HTTPException(409, "Disabled in live mode (SIMULATION_MODE=false)")
 
 

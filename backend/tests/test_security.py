@@ -132,3 +132,24 @@ async def test_ws_accepts_valid_token(auth_on):
 async def test_ws_open_when_auth_off():
     async with websockets.connect(WS, open_timeout=5) as ws:
         assert json.loads(await ws.recv())["type"] == "tick"
+
+
+# ---- review findings ---- #
+def test_fdb_assets_need_login_when_auth_on_without_token(auth_on):
+    assert requests.post(f"{API}/fdb", json={"ip": "203.0.113.250"}).status_code == 401
+    assert requests.post(f"{API}/assets", json={"assets": []}).status_code == 401
+    assert requests.post(f"{API}/assets", json={"assets": []}, headers=bearer("operator")).status_code == 200
+    # legacy collector writes stay open in this combination (existing Node-RED flows)
+    assert requests.post(f"{API}/ingest", json={"samples": []}).status_code == 200
+
+
+def test_sim_mode_toggle_cannot_unlock_reset(monkeypatch):
+    monkeypatch.setattr(server, "_SIM_ENV", False)          # .env says live
+    monkeypatch.setattr(server, "_SIM_OVERRIDE", True)      # runtime toggled to sim
+    assert requests.post(f"{API}/mock/reset").status_code == 409
+    assert requests.get(f"{API}/devices").json()
+
+
+def test_non_ascii_ingest_header_is_401_not_500(auth_on, ingest_token):
+    r = requests.get(f"{API}/devices", headers={"X-Ingest-Token": "\xe9".encode("latin-1")})
+    assert r.status_code == 401

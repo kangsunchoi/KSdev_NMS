@@ -98,7 +98,13 @@ _ADMIN_ROUTES = [
     ("POST", r"/api/links/reset"),
 ]
 
+# Collector write routes that already required a user login before INGEST_TOKEN
+# existed for them. With AUTH_ENABLED=true and no INGEST_TOKEN they keep requiring
+# login (no new anonymous write paths).
+_COLLECTOR_WRITE_LOGIN_WHEN_NO_TOKEN = [("POST", r"/api/fdb"), ("POST", r"/api/assets")]
+
 COLLECTOR_USER = {"username": "collector", "role": "collector"}
+ANON_COLLECTOR_USER = {"username": "anonymous-collector", "role": "collector"}
 
 
 def _match(routes, method: str, path: str) -> bool:
@@ -109,7 +115,9 @@ def has_valid_ingest_token(request) -> bool:
     """True if INGEST_TOKEN is configured and the request carries it."""
     if not INGEST_TOKEN:
         return False
-    return hmac.compare_digest(request.headers.get("x-ingest-token", ""), INGEST_TOKEN)
+    # Compare as bytes: str compare_digest raises TypeError on non-ASCII input.
+    got = request.headers.get("x-ingest-token", "").encode("utf-8", "surrogateescape")
+    return hmac.compare_digest(got, INGEST_TOKEN.encode("utf-8"))
 
 
 def startup_warnings():
@@ -308,10 +316,12 @@ def register_middleware(app, db, audit_module=None):
         request.state.collector = collector
 
         # 1) Collector write routes: guarded by INGEST_TOKEN only (independent of AUTH_ENABLED).
-        if _match(_COLLECTOR_WRITE, method, path):
+        if _match(_COLLECTOR_WRITE, method, path) and not (
+                AUTH_ENABLED and not INGEST_TOKEN and _match(_COLLECTOR_WRITE_LOGIN_WHEN_NO_TOKEN, method, path)):
             if INGEST_TOKEN and not collector:
                 return JSONResponse({"detail": "Invalid or missing ingest token"}, status_code=401)
-            return await _proceed(request, call_next, db, audit_module, user=COLLECTOR_USER)
+            return await _proceed(request, call_next, db, audit_module,
+                                  user=COLLECTOR_USER if collector else ANON_COLLECTOR_USER)
 
         # 2) Collector calling one of the shared user routes with a valid token.
         if collector and _match(_COLLECTOR_ALSO, method, path):

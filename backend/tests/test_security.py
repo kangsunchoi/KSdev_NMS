@@ -153,3 +153,14 @@ def test_sim_mode_toggle_cannot_unlock_reset(monkeypatch):
 def test_non_ascii_ingest_header_is_401_not_500(auth_on, ingest_token):
     r = requests.get(f"{API}/devices", headers={"X-Ingest-Token": "\xe9".encode("latin-1")})
     assert r.status_code == 401
+
+
+# ---- #27: device deletion is admin-only ---- #
+def test_device_delete_admin_only(auth_on):
+    r = requests.post(f"{API}/devices", headers=bearer("operator"), json={
+        "name": "DEL-T", "ip": "203.0.113.77", "vendor": "t", "model": "t", "protocol": "ICMP",
+        "device_type": "switch"})
+    assert r.status_code == 200
+    dev_id = r.json()["id"]
+    assert requests.delete(f"{API}/devices/{dev_id}", headers=bearer("operator")).status_code == 403
+    assert requests.delete(f"{API}/devices/{dev_id}", headers=bearer("admin")).status_code == 200

@@ -96,6 +96,7 @@ _ADMIN_ROUTES = [
     ("POST", r"/api/devices/cleanup"),
     ("POST", r"/api/assets/reset"),
     ("POST", r"/api/links/reset"),
+    ("DELETE", r"/api/devices/[^/]+"),  # cascades to alerts/metrics/links (issue #27)
 ]
 
 # Collector write routes that already required a user login before INGEST_TOKEN

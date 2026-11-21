@@ -102,7 +102,17 @@ class DeviceCreate(DeviceBase):
         v = (v or "").strip()
         if not _valid_ip(v):
             raise ValueError("ip must be a valid IPv4/IPv6 address")
+        if _is_placeholder(v):
+            raise ValueError("0.0.0.0 / :: is reserved for auto-created devices")
         return _normalize_ip(v)
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("name must not be empty")
+        return v
 
 
 class DeviceUpdate(BaseModel):
@@ -285,7 +295,10 @@ async def _create_alert(device: dict, severity: AlertSeverity, message: str, for
     if not force:
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ALERT_DEBOUNCE_SEC)).isoformat()
         recent = await db.alerts.find_one(
-            {"device_id": device["id"], "severity": severity, "timestamp": {"$gte": cutoff}},
+            # only an OPEN alert suppresses a new one: after offline->online->offline the
+            # first alert is already resolved and the new outage must be visible (#36)
+            {"device_id": device["id"], "severity": severity, "acknowledged": False,
+             "timestamp": {"$gte": cutoff}},
             {"_id": 0, "id": 1},
         )
         if recent:
@@ -479,8 +492,16 @@ async def _wipe_device_data():
 _PLACEHOLDER_IPS = {"0.0.0.0", "::"}
 
 
+def _is_placeholder(ip: Optional[str]) -> bool:
+    """0.0.0.0 / :: in any spelling (e.g. '::0', ' 0.0.0.0 ') (#36)."""
+    v = (ip or "").strip()
+    if v in _PLACEHOLDER_IPS:
+        return True
+    return _valid_ip(v) and _normalize_ip(v) in _PLACEHOLDER_IPS
+
+
 async def _ip_taken(ip: str, exclude_id: Optional[str] = None) -> bool:
-    if not ip or ip in _PLACEHOLDER_IPS:
+    if not ip or _is_placeholder(ip):
         return False
     q: dict = {"ip": ip}
     if exclude_id:
@@ -522,6 +543,10 @@ async def update_device(device_id: str, payload: DeviceUpdate):
     update = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not update:
         raise HTTPException(400, "Empty update")
+    if "name" in update:
+        update["name"] = update["name"].strip()
+        if not update["name"]:
+            raise HTTPException(422, "name must not be empty")
     current = await db.devices.find_one({"id": device_id}, {"_id": 0, "ip": 1})
     if not current:
         raise HTTPException(404, "Device not found")
@@ -534,6 +559,8 @@ async def update_device(device_id: str, payload: DeviceUpdate):
         else:
             if not _valid_ip(new_ip):
                 raise HTTPException(422, "ip must be a valid IPv4/IPv6 address")
+            if _is_placeholder(new_ip):
+                raise HTTPException(422, "0.0.0.0 / :: is reserved for auto-created devices")
             new_ip = _normalize_ip(new_ip)
             if await _ip_taken(new_ip, exclude_id=device_id):
                 raise HTTPException(409, f"A device with IP {new_ip} already exists")
@@ -1059,7 +1086,7 @@ async def _find_device(did=None, ip=None, name=None):
         d = await db.devices.find_one({"id": did}, {"_id": 0})
         if d:
             return d
-    if ip and ip.strip() not in _PLACEHOLDER_IPS:
+    if ip and not _is_placeholder(ip):
         # devices are stored with the normalized IP; legacy rows may hold the raw text
         candidates = [ip, ip.strip()]
         if _valid_ip(ip):
@@ -1422,7 +1449,7 @@ def _resolve_cached(cache: dict, did=None, ip=None, name=None) -> Optional[dict]
     """Same rules as _find_device (id, normalized/raw ip, unique name), in memory."""
     if did and did in cache["by_id"]:
         return cache["by_id"][did]
-    if ip and ip.strip() not in _PLACEHOLDER_IPS:
+    if ip and not _is_placeholder(ip):
         candidates = ([_normalize_ip(ip)] if _valid_ip(ip) else []) + [ip, ip.strip()]
         for c in candidates:
             if c in cache["by_ip"]:
@@ -1431,6 +1458,8 @@ def _resolve_cached(cache: dict, did=None, ip=None, name=None) -> Optional[dict]
         matches = cache["by_name"].get(name, [])
         if len(matches) == 1:
             return matches[0]
+        if len(matches) > 1:
+            logging.warning("ambiguous device name %r matches several devices; sample not attached", name)
     return None
 
 
@@ -1612,18 +1641,32 @@ BROADCAST_DEBOUNCE_SEC = float(os.environ.get("BROADCAST_DEBOUNCE_SEC", "1.0"))
 _broadcast_task: Optional[asyncio.Task] = None
 
 
+_broadcast_dirty = False
+
+
 async def _delayed_broadcast():
-    await asyncio.sleep(BROADCAST_DEBOUNCE_SEC)
-    if ws_manager.clients:
-        await ws_manager.broadcast(await _build_snapshot())
+    global _broadcast_dirty
+    try:
+        while True:
+            # wait before every snapshot, so constant ingest caps the rate at ~1/(debounce+build)
+            await asyncio.sleep(BROADCAST_DEBOUNCE_SEC)
+            _broadcast_dirty = False
+            if ws_manager.clients:
+                await ws_manager.broadcast(await _build_snapshot())
+            if not _broadcast_dirty:  # nothing changed while the snapshot was being built
+                break
+    except Exception:
+        logging.exception("coalesced broadcast failed")
 
 
 def _schedule_broadcast():
     global _broadcast_task
     if not ws_manager.clients:
         return
+    global _broadcast_dirty
     if _broadcast_task is not None and not _broadcast_task.done():
-        return  # one is already pending: this change will be included in it
+        _broadcast_dirty = True  # picked up by the pending task (even mid-snapshot)
+        return
     _broadcast_task = asyncio.create_task(_delayed_broadcast())
 
 
@@ -1746,6 +1789,29 @@ async def _simulate_tick():
         await db.device_metrics.insert_many(metric_docs)
 
 
+async def _normalize_stored_ips() -> int:
+    """Startup migration (#33): rewrite device IPs stored in a non-canonical
+    spelling (' 10.0.0.1', 'FE80::1') to the canonical form, so duplicate checks
+    compare like with like. Skips a device when the canonical IP is already used
+    by another device (logged) and leaves invalid IPs (e.g. hostnames) untouched."""
+    fixed = 0
+    async for d in db.devices.find({}, {"_id": 0, "id": 1, "ip": 1}):
+        raw = d.get("ip") or ""
+        if not _valid_ip(raw):
+            continue
+        canon = _normalize_ip(raw)
+        if canon == raw:
+            continue
+        if not _is_placeholder(canon) and await _ip_taken(canon, exclude_id=d["id"]):
+            logging.warning("device %s: IP %r not normalized, %s is used by another device", d["id"], raw, canon)
+            continue
+        await db.devices.update_one({"id": d["id"]}, {"$set": {"ip": canon}})
+        fixed += 1
+    if fixed:
+        logging.info("normalized %d stored device IP(s)", fixed)
+    return fixed
+
+
 def _collector_status() -> dict:
     """Is the collector (Node-RED) still sending? Only meaningful in live mode."""
     stale = False
@@ -1856,24 +1922,51 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+_INDEXES = [
+    # (collection, keys, options). Each one is created on its own, so one failure
+    # (e.g. legacy duplicate ids blocking a unique index) never skips the rest.
+    ("device_metrics", "ts_dt", {"expireAfterSeconds": _METRIC_TTL_SEC}),
+    ("device_metrics", [("device_id", 1), ("ts", 1)], {}),
+    ("devices", "ip", {}),  # speed up ingest lookups by IP
+    ("devices", "name", {}),
+    ("links", [("source_id", 1), ("target_id", 1)], {"unique": True}),
+    ("unified_metrics", "ts_dt", {"expireAfterSeconds": _METRIC_TTL_SEC}),
+    ("unified_metrics", [("device_id", 1), ("metric_name", 1), ("ts", 1)], {}),
+    ("device_kv", [("device_id", 1), ("metric_name", 1)], {"unique": True}),
+    # alerts: counted every 5s and on every ingest; history is kept for days now
+    ("alerts", [("acknowledged", 1), ("severity", 1)], {}),
+    ("alerts", [("device_id", 1), ("severity", 1), ("timestamp", -1)], {}),
+    ("alerts", [("timestamp", -1)], {}),
+    ("alerts", "id", {"unique": True}),
+    ("devices", "id", {"unique": True}),
+]
+
+
+async def _ensure_indexes() -> list:
+    """Create every index independently; return the ones that failed."""
+    failed = []
+    for coll, keys, opts in _INDEXES:
+        try:
+            await db[coll].create_index(keys, **opts)
+        except Exception as e:
+            failed.append((coll, keys))
+            logger.warning("index create failed on %s %s: %s", coll, keys, e)
+            if coll == "devices" and keys == "id":
+                try:
+                    dups = await db.devices.aggregate([
+                    {"$group": {"_id": "$id", "n": {"$sum": 1}}}, {"$match": {"n": {"$gt": 1}}},
+                        {"$limit": 20}]).to_list(20)
+                    logger.warning("duplicate device ids blocking the unique index: %s",
+                                   [d["_id"] for d in dups])
+                except Exception:
+                    pass
+    return failed
+
+
 @app.on_event("startup")
 async def startup():
-    # TTL index for metric history (24h)
-    try:
-        await db.device_metrics.create_index("ts_dt", expireAfterSeconds=_METRIC_TTL_SEC)
-        await db.device_metrics.create_index([("device_id", 1), ("ts", 1)])
-        await db.devices.create_index("ip")  # speed up ingest lookups by IP
-        await db.links.create_index([("source_id", 1), ("target_id", 1)], unique=True)
-        await db.unified_metrics.create_index("ts_dt", expireAfterSeconds=_METRIC_TTL_SEC)
-        await db.unified_metrics.create_index([("device_id", 1), ("metric_name", 1), ("ts", 1)])
-        await db.device_kv.create_index([("device_id", 1), ("metric_name", 1)], unique=True)
-        # alerts: counted every 5s and on every ingest; history is kept for days now
-        await db.alerts.create_index([("acknowledged", 1), ("severity", 1)])
-        await db.alerts.create_index([("device_id", 1), ("severity", 1), ("timestamp", -1)])
-        await db.alerts.create_index([("timestamp", -1)])
-        await db.alerts.create_index("id", unique=True)
-    except Exception as e:
-        logger.warning("index create failed: %s", e)
+    await _ensure_indexes()
+    await _normalize_stored_ips()
     # One-time migration: alerts created before the lifecycle fields existed (issue #10)
     await db.alerts.update_many({"state": {"$exists": False}, "acknowledged": True},
                                 {"$set": {"state": "acknowledged"}})

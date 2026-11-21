@@ -185,3 +185,19 @@ def test_cors_warning_when_auth_on_with_wildcard(auth_on, monkeypatch, caplog):
     with caplog.at_level("WARNING"):
         auth.startup_warnings()
     assert any("CORS_ORIGINS" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, ["*"]), ("", ["*"]), (" , ", ["*"]), ("*", ["*"]), ("http://a.com,*", ["*"]),
+    ("http://a.com, http://b.com ", ["http://a.com", "http://b.com"]),
+    ("http://host:8080/", ["http://host:8080"]),
+])
+def test_parse_cors_origins(raw, expected):
+    assert auth.parse_cors_origins(raw) == expected
+
+
+def test_cors_warning_covers_mixed_wildcard(auth_on, monkeypatch, caplog):
+    monkeypatch.setenv("CORS_ORIGINS", "http://a.com,*")
+    with caplog.at_level("WARNING"):
+        auth.startup_warnings()
+    assert any("CORS_ORIGINS" in r.getMessage() for r in caplog.records)

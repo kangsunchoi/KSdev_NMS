@@ -121,9 +121,18 @@ def has_valid_ingest_token(request) -> bool:
     return hmac.compare_digest(got, INGEST_TOKEN.encode("utf-8"))
 
 
+def parse_cors_origins(raw: Optional[str]) -> list:
+    """CORS_ORIGINS env -> origin list (issue #8). Trims spaces and trailing '/'
+    (a browser Origin never has one, so "http://host:8080/" would match nothing).
+    Empty or any '*' entry means allow all."""
+    items = [o.strip().rstrip("/") for o in (raw if raw is not None else "*").split(",")]
+    items = [o for o in items if o]
+    return ["*"] if not items or "*" in items else items
+
+
 def startup_warnings():
     """Log configuration risks once at startup (issues #6, #8)."""
-    if AUTH_ENABLED and os.environ.get("CORS_ORIGINS", "*").strip() in ("", "*"):
+    if AUTH_ENABLED and parse_cors_origins(os.environ.get("CORS_ORIGINS")) == ["*"]:
         logger.warning("AUTH_ENABLED=true with CORS_ORIGINS='*': browsers accept API calls from any "
                        "web origin. Set CORS_ORIGINS to the dashboard URL(s), comma-separated "
                        "(e.g. http://192.168.108.129:8080).")

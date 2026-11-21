@@ -48,8 +48,9 @@ function App() {
         const on = !!cfg.auth_enabled;
         setAuthEnabled(on);
         window.__nvAuthEnabled = on;
-        // Refresh the cached role so a role changed by an admin takes effect
-        // (a 401 here drops the session via the api.js interceptor).
+        // Align the cached user/role with what the token actually carries (a 401
+        // drops the session via the api.js interceptor). NOTE: the role lives in
+        // the token, so a role changed by an admin applies after re-login (#49).
         if (on && getToken()) {
           try {
             const me = await fetchMe();

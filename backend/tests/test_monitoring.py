@@ -69,10 +69,12 @@ def live(monkeypatch):
 # ---- #12: collector timestamps are normalized (history only) ---- #
 def test_collector_ts_normalized_in_history(live):
     d = _new_device()
-    _ingest({"device_id": d["id"], "reachable": True, "ts": "2026-01-02T12:04:05+09:00"})
-    pts = requests.get(f"{API}/devices/{d['id']}/metrics?hours=168").json()["points"]
+    utc = (datetime.now(timezone.utc) - timedelta(hours=2)).replace(microsecond=0)
+    kst = utc.astimezone(timezone(timedelta(hours=9)))  # same instant, +09:00 offset
+    _ingest({"device_id": d["id"], "reachable": True, "ts": kst.isoformat()})
+    pts = requests.get(f"{API}/devices/{d['id']}/metrics?hours=24").json()["points"]
     # history keeps the collector's time, normalized to UTC ISO
-    assert any(p["ts"] == "2026-01-02T03:04:05+00:00" for p in pts)
+    assert any(p["ts"] == utc.isoformat() for p in pts), pts
 
 
 @pytest.mark.parametrize("ts", ["garbage", "2999-01-01T00:00:00Z", _ago(hours=5)])

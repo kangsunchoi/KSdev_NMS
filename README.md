@@ -61,6 +61,16 @@ pytest -q
 실제 MongoDB로 돌리려면 `TEST_MONGO_URL=mongodb://localhost:27017 pytest -q`.
 PR마다 GitHub Actions가 린트, 백엔드 테스트(실 MongoDB), 프론트 빌드를 자동 실행한다.
 
+## 테스트 PC 배포 (한 줄)
+
+MongoDB가 실행 중인 Ubuntu PC에서:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kangsunchoi/KSdev_NMS/main/scripts/deploy_pc.sh | bash
+```
+
+`~/dev/KSdev_NMS`에 설치하고 `systemd --user` 서비스로 백엔드(:8001)·대시보드(:3000)를 띄운다. 재실행하면 최신 main으로 업데이트된다. MongoDB 설정·데이터는 건드리지 않는다.
+
 ## 운영 배포
 
 현재 운영은 내부 VM(`192.168.108.129`, 대시보드 `:8080`). 절차는 [`docs/02_구성_배포_운영.md`](docs/02_구성_배포_운영.md).

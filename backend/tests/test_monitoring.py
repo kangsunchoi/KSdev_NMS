@@ -15,7 +15,8 @@ if "server" not in sys.modules:
     pytest.skip("monitoring tests need the in-process test server", allow_module_level=True)
 
 import notify  # noqa: E402
-import server  # noqa: E402
+import server  # noqa: E402,F401  (in-process test server; netvision.* below is its code)
+from netvision import config, database, monitoring  # noqa: E402
 
 API = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") + "/api"
 
@@ -42,7 +43,7 @@ def _db(collection: str):
     """Direct DB handle for arranging state (works for in-memory and real MongoDB)."""
     url = os.environ["MONGO_URL"]
     if url.startswith("mongomock://"):
-        coll = getattr(server.db, collection)
+        coll = getattr(database.db, collection)
 
         class _Sync:
             def __getattr__(self, name):
@@ -64,7 +65,7 @@ def _ingest(sample):
 
 @pytest.fixture
 def live(monkeypatch):
-    monkeypatch.setattr(server, "_SIM_OVERRIDE", False)
+    monkeypatch.setattr(config, "_SIM_OVERRIDE", False)
 
 
 # ---- #12: collector timestamps are normalized (history only) ---- #
@@ -96,8 +97,8 @@ def _wait_status(dev_id, status, timeout=12):  # metrics_loop ticks every 5s
 
 
 def test_stale_device_goes_offline_and_recovers(live, monkeypatch):
-    monkeypatch.setattr(server, "STALE_AFTER_SEC", 30)
-    monkeypatch.setattr(server, "_STARTED_AT", datetime.now(timezone.utc) - timedelta(hours=1))
+    monkeypatch.setattr(config, "STALE_AFTER_SEC", 30)
+    monkeypatch.setattr(config, "_STARTED_AT", datetime.now(timezone.utc) - timedelta(hours=1))
     d = _new_device()
     _ingest({"device_id": d["id"], "reachable": True, "latency_ms": 1, "packet_loss": 0})
     assert _get(d["id"])["status"] == "online"
@@ -118,8 +119,8 @@ def test_stale_device_goes_offline_and_recovers(live, monkeypatch):
 
 def test_restart_grace_period(live, monkeypatch):
     # backend was down: devices have old last_seen, but the process just started
-    monkeypatch.setattr(server, "STALE_AFTER_SEC", 30)
-    monkeypatch.setattr(server, "_STARTED_AT", datetime.now(timezone.utc))
+    monkeypatch.setattr(config, "STALE_AFTER_SEC", 30)
+    monkeypatch.setattr(config, "_STARTED_AT", datetime.now(timezone.utc))
     d = _new_device()
     _ingest({"device_id": d["id"], "reachable": True, "latency_ms": 1, "packet_loss": 0})
     _db("devices").update_one({"id": d["id"]}, {"$set": {"last_seen": _ago(minutes=10)}})
@@ -128,13 +129,13 @@ def test_restart_grace_period(live, monkeypatch):
 
 
 def test_whole_collector_down_raises_one_alert(live, monkeypatch):
-    monkeypatch.setattr(server, "STALE_AFTER_SEC", 30)
-    monkeypatch.setattr(server, "_STARTED_AT", datetime.now(timezone.utc) - timedelta(hours=1))
+    monkeypatch.setattr(config, "STALE_AFTER_SEC", 30)
+    monkeypatch.setattr(config, "_STARTED_AT", datetime.now(timezone.utc) - timedelta(hours=1))
     a, b = _new_device(), _new_device()
     for d in (a, b):
         _ingest({"device_id": d["id"], "reachable": True, "latency_ms": 1, "packet_loss": 0})
         _db("devices").update_one({"id": d["id"]}, {"$set": {"last_seen": _ago(minutes=10)}})
-    monkeypatch.setattr(server, "_LAST_INGEST_TS", _ago(minutes=10))
+    monkeypatch.setattr(config, "_LAST_INGEST_TS", _ago(minutes=10))
     _wait_status(b["id"], "offline")
     assert _get(a["id"])["status"] == "offline"
     assert not [x for x in _alerts(a["id"]) + _alerts(b["id"]) if "no data from collector" in x["message"]]
@@ -145,7 +146,7 @@ def test_whole_collector_down_raises_one_alert(live, monkeypatch):
 
 
 def test_closed_alert_purged_after_retention(monkeypatch):
-    monkeypatch.setattr(server, "ALERT_RETENTION_DAYS", 1)
+    monkeypatch.setattr(config, "ALERT_RETENTION_DAYS", 1)
     old_id, new_id = str(uuid.uuid4()), str(uuid.uuid4())
     base = {"device_id": "purge-test", "device_name": "p", "severity": "warning", "message": "m",
             "acknowledged": True, "state": "resolved", "timestamp": _ago(days=10)}
@@ -159,9 +160,9 @@ def test_closed_alert_purged_after_retention(monkeypatch):
 
 
 def test_no_stale_marking_in_simulation_mode(monkeypatch):
-    monkeypatch.setattr(server, "STALE_AFTER_SEC", 1)
-    assert server.sim_on()
-    assert server._collector_status()["collector_stale"] is False
+    monkeypatch.setattr(config, "STALE_AFTER_SEC", 1)
+    assert config.sim_on()
+    assert monitoring._collector_status()["collector_stale"] is False
 
 
 # ---- #10: operator acknowledge vs auto-resolve are distinguishable ---- #

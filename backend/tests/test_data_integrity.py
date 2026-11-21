@@ -10,7 +10,8 @@ import requests
 if "server" not in sys.modules:
     pytest.skip("data-integrity tests need the in-process test server", allow_module_level=True)
 
-import server  # noqa: E402
+import server  # noqa: E402,F401  (in-process test server; netvision.* below is its code)
+from netvision import database, devices, helpers  # noqa: E402
 
 API = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") + "/api"
 
@@ -18,7 +19,7 @@ API = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") + "/api"
 def _db(collection: str):
     url = os.environ["MONGO_URL"]
     if url.startswith("mongomock://"):
-        coll = getattr(server.db, collection)
+        coll = getattr(database.db, collection)
 
         class _Sync:
             def __getattr__(self, name):
@@ -107,7 +108,7 @@ def _attach_everything(dev, peer):
 
 def _leftovers(dev_id):
     found = {}
-    for coll, field in server._DEVICE_REF_COLLECTIONS:
+    for coll, field in devices._DEVICE_REF_COLLECTIONS:
         n = len(_db(coll).find({field: dev_id}))
         if n:
             found[coll] = n
@@ -138,7 +139,7 @@ def test_cleanup_cascades_everywhere():
 def test_mock_regenerate_leaves_no_orphans():
     assert requests.post(f"{API}/mock/generate?replace=true").status_code == 200
     ids = {d["id"] for d in requests.get(f"{API}/devices").json()}
-    for coll, field in server._DEVICE_REF_COLLECTIONS:
+    for coll, field in devices._DEVICE_REF_COLLECTIONS:
         orphans = [x for x in _db(coll).find({}) if x.get(field) not in ids and x.get(field) != "collector"]
         assert not orphans, f"{coll} has {len(orphans)} orphan rows"
     for lk in _db("links").find({}):
@@ -211,7 +212,7 @@ def test_non_canonical_ip_matches_after_auto_create(raw):
     ip = raw.format(a=n % 250 + 1, b=(n >> 8) % 250 + 1)
     for _ in range(3):
         requests.post(f"{API}/ingest?auto_create=true", json={"samples": [{"ip": ip, "latency_ms": 1}]})
-    norm = server._normalize_ip(ip)
+    norm = helpers._normalize_ip(ip)
     assert len([d for d in requests.get(f"{API}/devices").json() if d["ip"] == norm]) == 1
     # other collector paths resolve it too
     r = requests.post(f"{API}/interfaces", json={"ip": ip, "interfaces": [{"ifindex": 1}]}).json()

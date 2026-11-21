@@ -7,6 +7,7 @@ import { exportCsv } from "../lib/csv";
 import { useI18n } from "../lib/i18n";
 import { Check, Trash2, Download, CheckCheck, Search, Link2 } from "lucide-react";
 import { toast } from "sonner";
+import { AlertHistory } from "../components/AlertHistory";
 
 const SEV_ORDER = { critical: 0, warning: 1, info: 2 };
 
@@ -26,7 +27,8 @@ export default function Alerts() {
     devices.forEach((d) => { m[d.id] = d.name; });
     return m;
   }, [devices]);
-  const [filter, setFilter] = useState("all"); // all | open | acknowledged
+  const [view, setView] = useState("live"); // live | history (issue #24)
+  const [filter, setFilter] = useState("all"); // all | open | acknowledged | resolved
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(new Set());
 
@@ -148,6 +150,18 @@ export default function Alerts() {
           </button>
         </div>
       </div>
+
+      <div className="flex gap-2 mb-3" role="tablist">
+        {["live", "history"].map((v) => (
+          <button key={v} role="tab" aria-selected={view === v}
+            className={`nv-btn ${view === v ? "nv-btn-primary" : ""}`}
+            onClick={() => setView(v)} data-testid={`alerts-view-${v}`}>
+            {v === "live" ? t("al.viewLive") : t("al.viewHistory")}
+          </button>
+        ))}
+      </div>
+
+      {view === "history" ? <AlertHistory deviceName={deviceName} /> : (<>
 
       <div className="flex gap-2 mb-3 items-center flex-wrap">
         {["all", "open", "acknowledged", "resolved"].map((f) => (
@@ -272,6 +286,7 @@ export default function Alerts() {
           </tbody>
         </table>
       </div>
+      </>)}
     </div>
   );
 }

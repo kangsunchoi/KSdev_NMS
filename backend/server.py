@@ -373,6 +373,19 @@ async def _resolve_device_alerts(device_id: str) -> int:
     return result.modified_count + legacy.modified_count
 
 
+async def _recover_if_stale(dev: dict) -> bool:
+    """A device marked offline only because data stopped (stale) comes back
+    when ANY collector data arrives: ingest, generic metrics or interfaces (#25)."""
+    if not (dev.get("stale") and dev.get("status") == "offline"):
+        return False
+    res = await db.devices.update_one({"id": dev["id"], "stale": True},
+                                      {"$set": {"status": "online", "stale": False}})
+    if res.modified_count:
+        await _resolve_device_alerts(dev["id"])
+        return True
+    return False
+
+
 async def _seed_phase4_demo(devices: List[dict]):
     """Simulation-only: plant a small FDB (one switch port with several MACs and
     no LLDP neighbor -> an unmanaged segment) and a couple of PLC child assets,
@@ -747,6 +760,7 @@ async def ingest_interfaces(payload: InterfacesPayload):
         upsert=True,
     )
     await db.devices.update_one({"id": dev["id"]}, {"$set": {"last_seen": now_iso}})
+    await _recover_if_stale(dev)
     return {"matched": True, "device_id": dev["id"], "count": len(rows), "bps_ready": dt is not None}
 
 
@@ -759,10 +773,48 @@ async def device_interfaces(device_id: str):
 
 
 # Alerts
+async def _recent_alerts(limit: int = 200) -> List[dict]:
+    """Live view: EVERY open alert (so the list always matches open_alerts),
+    then the most recent closed ones up to `limit` rows in total (issue #24)."""
+    open_docs = await db.alerts.find({"acknowledged": False}, {"_id": 0}).sort("timestamp", -1).to_list(None)
+    room = max(0, limit - len(open_docs))
+    closed = []
+    if room:
+        closed = await (db.alerts.find({"acknowledged": True}, {"_id": 0}).sort("timestamp", -1)
+                        .limit(room).to_list(room))
+    return sorted(open_docs + closed, key=lambda a: a.get("timestamp", ""), reverse=True)
+
+
 @api_router.get("/alerts", response_model=List[Alert])
 async def list_alerts(limit: int = 200):
-    docs = await db.alerts.find({}, {"_id": 0}).sort("timestamp", -1).to_list(limit)
-    return docs
+    return await _recent_alerts(max(1, min(limit, 1000)))
+
+
+@api_router.get("/alerts/history")
+async def alerts_history(
+    state: Optional[Literal["active", "acknowledged", "resolved"]] = None,
+    severity: Optional[AlertSeverity] = None,
+    device_id: Optional[str] = None,
+    hours: int = 24 * 7,
+    page: int = 1,
+    page_size: int = 100,
+):
+    """Paged alert history over the retention period (issue #24)."""
+    hours = max(1, min(hours, 24 * 366))
+    page = max(1, page)
+    page_size = max(1, min(page_size, 500))
+    q: dict = {"timestamp": {"$gte": (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()}}
+    if state:
+        q["state"] = state
+    if severity:
+        q["severity"] = severity
+    if device_id:
+        q["device_id"] = device_id
+    total = await db.alerts.count_documents(q)
+    items = await (db.alerts.find(q, {"_id": 0}).sort("timestamp", -1)
+                   .skip((page - 1) * page_size).limit(page_size).to_list(page_size))
+    return {"items": items, "total": total, "page": page, "page_size": page_size,
+            "pages": (total + page_size - 1) // page_size}
 
 
 @api_router.post("/alerts/{alert_id}/acknowledge", response_model=Alert)
@@ -1124,6 +1176,8 @@ async def ingest_metrics(payload: MetricsPayload):
                       "value": float(s.value), "unit": s.unit or "", "ts": ts}},
             upsert=True,
         )
+        if dev["id"] not in touched:
+            await _recover_if_stale(dev)
         touched.add(dev["id"])
         updated += 1
     if docs:
@@ -1492,7 +1546,7 @@ async def ws_endpoint(websocket: WebSocket):
 
 async def _build_snapshot() -> dict:
     devices = await db.devices.find({}, {"_id": 0}).to_list(None)
-    alerts = await db.alerts.find({}, {"_id": 0}).sort("timestamp", -1).to_list(200)
+    alerts = await _recent_alerts(200)
     total = len(devices)
     online = sum(1 for d in devices if d["status"] == "online")
     warning = sum(1 for d in devices if d["status"] == "warning")
@@ -1640,6 +1694,7 @@ async def metrics_loop():
                 await _simulate_tick()
 
             await _stale_sweep()
+            await notify.flush_suppressed()
 
             # purge closed (acknowledged/resolved) alerts older than the retention period
             # (counted from when the alert was CLOSED, not created)

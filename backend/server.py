@@ -101,22 +101,12 @@ class DeviceCreate(DeviceBase):
         v = (v or "").strip()
         if not _valid_ip(v):
             raise ValueError("ip must be a valid IPv4/IPv6 address")
-        return v
+        return _normalize_ip(v)
 
 
 class DeviceUpdate(BaseModel):
     name: Optional[str] = None
-    ip: Optional[str] = None
-
-    @field_validator("ip")
-    @classmethod
-    def _check_ip(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
-        v = v.strip()
-        if not _valid_ip(v):
-            raise ValueError("ip must be a valid IPv4/IPv6 address")
-        return v
+    ip: Optional[str] = None  # validated in update_device only when it actually changes
     vendor: Optional[str] = None
     model: Optional[str] = None
     protocol: Optional[str] = None
@@ -243,6 +233,11 @@ def _valid_ip(value: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _normalize_ip(value: str) -> str:
+    """Canonical text form (e.g. lower-case IPv6) so duplicate checks compare like with like."""
+    return str(ipaddress.ip_address(value.strip()))
 
 
 def _utc_now_iso() -> str:
@@ -511,8 +506,24 @@ async def update_device(device_id: str, payload: DeviceUpdate):
     update = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not update:
         raise HTTPException(400, "Empty update")
-    if "ip" in update and await _ip_taken(update["ip"], exclude_id=device_id):
-        raise HTTPException(409, f"A device with IP {update['ip']} already exists")
+    current = await db.devices.find_one({"id": device_id}, {"_id": 0, "ip": 1})
+    if not current:
+        raise HTTPException(404, "Device not found")
+    if "ip" in update:
+        new_ip = update["ip"].strip()
+        if new_ip == (current.get("ip") or ""):
+            # unchanged: never block editing other fields of a legacy device whose
+            # stored IP is invalid or duplicated (data from before validation existed)
+            update.pop("ip")
+        else:
+            if not _valid_ip(new_ip):
+                raise HTTPException(422, "ip must be a valid IPv4/IPv6 address")
+            new_ip = _normalize_ip(new_ip)
+            if await _ip_taken(new_ip, exclude_id=device_id):
+                raise HTTPException(409, f"A device with IP {new_ip} already exists")
+            update["ip"] = new_ip
+    if not update:  # only the unchanged ip was sent
+        return await db.devices.find_one({"id": device_id}, {"_id": 0})
     result = await db.devices.update_one({"id": device_id}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(404, "Device not found")
@@ -1312,10 +1323,13 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
         device = await _resolve_device(s)
 
         # auto-create a minimal device if requested and not found
-        if device is None and auto_create and (s.ip or s.name) and (not s.ip or _valid_ip(s.ip)):
+        # never auto-create when the name already exists: a None here then means the
+        # name is AMBIGUOUS, and creating yet another twin would grow forever
+        if (device is None and auto_create and (s.ip or s.name) and (not s.ip or _valid_ip(s.ip))
+                and not (s.name and await db.devices.count_documents({"name": s.name}))):
             dev = Device(
                 name=s.name or s.ip or "device",
-                ip=s.ip or "0.0.0.0",
+                ip=_normalize_ip(s.ip) if s.ip else "0.0.0.0",
                 vendor="Unknown",
                 model="Unknown",
                 protocol="ICMP",

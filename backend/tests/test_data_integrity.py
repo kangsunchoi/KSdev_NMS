@@ -157,4 +157,49 @@ def test_device_list_not_capped_at_1000():
         assert len(requests.get(f"{API}/devices").json()) >= 1010
         assert requests.get(f"{API}/dashboard/summary").json()["total"] >= 1010
     finally:
-        _db("devices").delete_many({"id": {"$regex": f"^bulk-{tag}-"}})
+        ids = [r["id"] for r in rows]
+        requests.post(f"{API}/devices/cleanup",
+                      json={"name_prefixes": [f"BULK-{tag}-"], "ip_prefix": "", "dry_run": False})
+        assert not _db("devices").find({"id": {"$in": ids}})
+
+
+# ---- review findings: legacy data must stay editable; no auto-create loop ---- #
+def _legacy(ip, name=None):
+    doc = {"id": f"legacy-{uuid.uuid4().hex[:8]}", "name": name or f"LEG-{uuid.uuid4().hex[:4]}", "ip": ip,
+           "vendor": "t", "model": "t", "protocol": "x", "device_type": "switch", "status": "online",
+           "latency_ms": 0.0, "packet_loss": 0.0, "uptime_pct": 100.0, "cpu_pct": 0.0,
+           "last_seen": "2026-11-21T00:00:00+00:00", "stale": False}
+    _db("devices").insert_one(dict(doc))
+    return doc
+
+
+def test_legacy_invalid_ip_device_still_editable():
+    d = _legacy("plc-01.local")
+    full_form = {k: d[k] for k in ("name", "ip", "vendor", "model", "protocol", "device_type")}
+    r = requests.patch(f"{API}/devices/{d['id']}", json={**full_form, "vendor": "edited"})
+    assert r.status_code == 200 and r.json()["vendor"] == "edited" and r.json()["ip"] == "plc-01.local"
+    # but changing it to another invalid value is still rejected
+    assert requests.patch(f"{API}/devices/{d['id']}", json={"ip": "still-bad"}).status_code == 422
+
+
+def test_legacy_duplicate_ip_devices_still_editable():
+    ip = _ip()
+    a, _b = _legacy(ip), _legacy(ip)
+    r = requests.patch(f"{API}/devices/{a['id']}", json={"ip": ip, "zone": "Z1"})
+    assert r.status_code == 200 and r.json()["zone"] == "Z1"
+
+
+def test_ip_normalized_for_duplicate_check():
+    d = _dev(ip="fe80::1:2")
+    assert requests.get(f"{API}/devices/{d['id']}").json()["ip"] == "fe80::1:2"
+    r = requests.post(f"{API}/devices", json={
+        "name": "UP", "ip": "FE80::1:2", "vendor": "t", "model": "t", "protocol": "x", "device_type": "switch"})
+    assert r.status_code == 409
+
+
+def test_ambiguous_name_does_not_auto_create():
+    name = f"TWIN-{uuid.uuid4().hex[:6]}"
+    _dev(name=name), _dev(name=name)
+    for _ in range(3):
+        requests.post(f"{API}/ingest?auto_create=true", json={"samples": [{"name": name, "latency_ms": 1}]})
+    assert len([d for d in requests.get(f"{API}/devices").json() if d["name"] == name]) == 2

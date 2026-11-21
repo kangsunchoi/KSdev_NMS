@@ -1,0 +1,10 @@
+line-length = 120
+target-version = "py310"
+
+[lint]
+# Errors + pyflakes + bugbear basics. Style rules stay off for now (legacy code).
+select = ["E9", "F", "B"]
+ignore = ["B008"]
+
+[lint.per-file-ignores]
+"tests/*" = ["B011"]

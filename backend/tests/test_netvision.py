@@ -63,10 +63,14 @@ class TestTopology:
         assert r.status_code == 200
         d = r.json()
         assert "nodes" in d and "edges" in d
-        assert len(d["nodes"]) == 20
-        # edges: PLCs(5)+HMIs(3)+sensors(9) attached to parents = 17 edges
-        assert len(d["edges"]) == 17
-        types = [n["data"]["type"] for n in d["nodes"]]
+        # Device nodes only: zones (compound parents), unmanaged segments and
+        # logical assets are additional node kinds added after iteration 1.
+        dev_nodes = [n for n in d["nodes"] if n["data"].get("type") in ("switch", "plc", "hmi", "sensor")]
+        assert len(dev_nodes) == 20
+        # hierarchy edges: PLCs(5)+HMIs(3)+sensors(9) attached to parents = 17
+        hier_edges = [e for e in d["edges"] if not e["data"].get("kind")]
+        assert len(hier_edges) == 17
+        types = [n["data"]["type"] for n in dev_nodes]
         assert types.count("switch") == 3
         assert types.count("plc") == 5
         assert types.count("hmi") == 3

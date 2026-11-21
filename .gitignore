@@ -82,3 +82,12 @@ memory/test_credentials.md
 android-sdk/frontend/node_modules/.cache/default-development/3.pack
 frontend/node_modules/.cache/default-development/5.pack
 frontend/node_modules/.cache/default-development/7.pack
+
+# Environment files (never commit real values; .env.example is tracked)
+.env
+.env.*
+!.env.example
+
+# Node-RED credentials (flows.json is tracked, credentials are not)
+nodered/*_cred.json
+nodered/.config*.json

@@ -8,7 +8,6 @@ Covers:
 import os
 import json
 import asyncio
-import time
 import pytest
 import requests
 import websockets
@@ -70,10 +69,10 @@ class TestDeviceMetrics:
                 assert k in p, f"missing {k} in point"
             assert "_id" not in p
 
-    def test_metrics_unknown_device_returns_empty(self, s):
+    def test_metrics_unknown_device_returns_404(self, s):
+        # Changed in iteration 3: unknown device is a 404 (see test_netvision_iter3).
         r = s.get(f"{API}/devices/does-not-exist/metrics")
-        assert r.status_code == 200
-        assert r.json()["points"] == []
+        assert r.status_code == 404
 
 
 # ---------------- Bulk Acknowledge ---------------- #

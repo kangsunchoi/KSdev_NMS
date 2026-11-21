@@ -47,7 +47,10 @@ export default function Alerts() {
     const q = search.trim().toLowerCase();
     return alerts
       .filter((a) =>
-        filter === "all" ? true : filter === "open" ? !a.acknowledged : a.acknowledged
+        filter === "all" ? true
+          : filter === "open" ? !a.acknowledged
+          : filter === "resolved" ? a.state === "resolved"
+          : a.acknowledged && a.state !== "resolved"
       )
       .filter((a) =>
         !q ||
@@ -61,9 +64,12 @@ export default function Alerts() {
   const counts = {
     all: alerts.length,
     open: alerts.filter((a) => !a.acknowledged).length,
-    acknowledged: alerts.filter((a) => a.acknowledged).length,
+    acknowledged: alerts.filter((a) => a.acknowledged && a.state !== "resolved").length,
+    resolved: alerts.filter((a) => a.state === "resolved").length,
   };
-  const FILTER_LABEL = { all: t("al.filterAll"), open: t("al.filterOpen"), acknowledged: t("al.filterAck") };
+  const FILTER_LABEL = {
+    all: t("al.filterAll"), open: t("al.filterOpen"), acknowledged: t("al.filterAck"), resolved: t("al.stateResolved"),
+  };
 
   const toggle = (id) => {
     setSelected((prev) => {
@@ -105,6 +111,9 @@ export default function Alerts() {
       device_id: a.device_id,
       message: a.message,
       acknowledged: a.acknowledged,
+      state: a.state || (a.acknowledged ? "acknowledged" : "active"),
+      acknowledged_at: a.acknowledged_at || "",
+      resolved_at: a.resolved_at || "",
     }));
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     exportCsv(`netvision-alerts-${ts}.csv`, rows);
@@ -141,7 +150,7 @@ export default function Alerts() {
       </div>
 
       <div className="flex gap-2 mb-3 items-center flex-wrap">
-        {["all", "open", "acknowledged"].map((f) => (
+        {["all", "open", "acknowledged", "resolved"].map((f) => (
           <button
             key={f}
             onClick={() => setFilter(f)}

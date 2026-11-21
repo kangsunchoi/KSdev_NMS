@@ -53,6 +53,7 @@ _INDEXES = [
     ("alerts", [("timestamp", -1)], {}),
     ("alerts", "id", {"unique": True}),
     ("devices", "id", {"unique": True}),
+    ("users", "username", {}),  # looked up on every authenticated request (#49)
 ]
 
 

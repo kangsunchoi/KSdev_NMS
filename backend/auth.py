@@ -122,7 +122,11 @@ def has_valid_ingest_token(request) -> bool:
 
 
 def startup_warnings():
-    """Log configuration risks once at startup (issue #6)."""
+    """Log configuration risks once at startup (issues #6, #8)."""
+    if AUTH_ENABLED and os.environ.get("CORS_ORIGINS", "*").strip() in ("", "*"):
+        logger.warning("AUTH_ENABLED=true with CORS_ORIGINS='*': browsers accept API calls from any "
+                       "web origin. Set CORS_ORIGINS to the dashboard URL(s), comma-separated "
+                       "(e.g. http://192.168.108.129:8080).")
     if not INGEST_TOKEN:
         logger.warning("INGEST_TOKEN is not set: collector endpoints (/api/ingest, /api/metrics, ...) "
                        "accept data from anyone on the network. Set INGEST_TOKEN in backend/.env "

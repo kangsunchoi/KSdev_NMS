@@ -6,7 +6,9 @@ import {
   updateDevice,
   deleteDevice,
   resetAll,
+  fetchSimMode,
 } from "../lib/api";
+import { getUser } from "../lib/auth";
 import { exportCsv } from "../lib/csv";
 import { StatusDot } from "../components/StatusDot";
 import { MetricChartModal } from "../components/MetricChartModal";
@@ -127,6 +129,11 @@ export default function Devices() {
     queryKey: ["devices"],
     queryFn: fetchDevices,
   });
+  // "Reset all" wipes every collection: only offer it in simulation mode, and
+  // only to admins when login is enabled (backend enforces the same, issue #5).
+  const { data: simMode } = useQuery({ queryKey: ["simMode"], queryFn: fetchSimMode });
+  const isAdmin = !window.__nvAuthEnabled || getUser()?.role === "admin";
+  const canReset = !!simMode?.simulation_mode && isAdmin;
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -212,13 +219,15 @@ export default function Devices() {
           >
             <Download size={14} /> {t("common.exportCsv")}
           </button>
-          <button
-            className="nv-btn nv-btn-danger"
-            onClick={async () => { if (window.confirm(t("dev.confirmReset"))) { await resetAll(); qc.invalidateQueries(); toast.success(t("dev.cleared")); } }}
-            data-testid="devices-reset-btn"
-          >
-            <Eraser size={14} /> {t("dev.reset")}
-          </button>
+          {canReset && (
+            <button
+              className="nv-btn nv-btn-danger"
+              onClick={async () => { if (window.confirm(t("dev.confirmReset"))) { await resetAll(); qc.invalidateQueries(); toast.success(t("dev.cleared")); } }}
+              data-testid="devices-reset-btn"
+            >
+              <Eraser size={14} /> {t("dev.reset")}
+            </button>
+          )}
           <button
             className="nv-btn nv-btn-primary"
             onClick={() => { setEditing(null); setModalOpen(true); }}

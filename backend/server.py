@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -492,18 +492,32 @@ class DiscoveryRegister(BaseModel):
     ips: List[str] = []
 
 
+COMMUNITY_MASK = "********"
+
+
+def _discovery_view(doc: dict, request: Request) -> dict:
+    """Hide the SNMP community from UI users (issue #7). The collector (valid
+    X-Ingest-Token) gets the real value. Without INGEST_TOKEN the collector
+    cannot be told apart, so the value stays visible for backward compatibility."""
+    if doc and doc.get("community") and auth.INGEST_TOKEN and not getattr(request.state, "collector", False):
+        doc = {**doc, "community": COMMUNITY_MASK}
+    return doc
+
+
 @api_router.get("/discovery")
-async def get_discovery():
-    return await _get_discovery_doc()
+async def get_discovery(request: Request):
+    return _discovery_view(await _get_discovery_doc(), request)
 
 
 @api_router.put("/discovery")
-async def update_discovery(patch: DiscoveryUpdate):
+async def update_discovery(patch: DiscoveryUpdate, request: Request):
     await _get_discovery_doc()
     fields = {k: v for k, v in patch.model_dump().items() if v is not None}
+    if fields.get("community") == COMMUNITY_MASK:
+        fields.pop("community")  # UI sent back the mask unchanged -> keep stored value
     if fields:
         await db.discovery.update_one({"id": "default"}, {"$set": fields})
-    return await db.discovery.find_one({"id": "default"}, {"_id": 0})
+    return _discovery_view(await db.discovery.find_one({"id": "default"}, {"_id": 0}), request)
 
 
 @api_router.post("/discovery/register")
@@ -1059,8 +1073,17 @@ async def dashboard_summary():
 
 
 # Mock data generator (manual)
+def _require_sim_mode():
+    """Mock data endpoints wipe collections; never allow them in live mode (issue #5)."""
+    # Both the persistent .env setting AND the runtime mode must be simulation:
+    # POST /api/sim/mode alone must not unlock wiping a live database.
+    if not (_SIM_ENV and sim_on()):
+        raise HTTPException(409, "Disabled in live mode (SIMULATION_MODE=false)")
+
+
 @api_router.post("/mock/generate")
 async def generate_mock(replace: bool = True):
+    _require_sim_mode()
     if replace:
         await db.devices.delete_many({})
         await db.alerts.delete_many({})
@@ -1086,6 +1109,7 @@ async def generate_mock(replace: bool = True):
 # Reset all
 @api_router.post("/mock/reset")
 async def reset_all():
+    _require_sim_mode()
     await db.devices.delete_many({})
     await db.alerts.delete_many({})
     await db.device_metrics.delete_many({})
@@ -1318,6 +1342,13 @@ ws_manager = WSManager()
 
 @api_router.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
+    # The HTTP auth middleware does not run for WebSockets (issue #2).
+    # Browsers cannot set headers on a WebSocket, so the token comes as ?token=.
+    if auth.AUTH_ENABLED:
+        token = websocket.query_params.get("token")
+        if not (token and auth.verify_token(token)):
+            await websocket.close(code=1008)  # policy violation -> handshake rejected
+            return
     await ws_manager.connect(websocket)
     try:
         # send an initial snapshot
@@ -1485,6 +1516,7 @@ async def startup():
     # Audit indexes (always) + default admin (only when AUTH_ENABLED and no users yet).
     await audit.ensure_indexes(db)
     await auth.ensure_default_admin(db)
+    auth.startup_warnings()
     # Only auto-seed mock devices in simulation mode
     if sim_on():
         await _ensure_seed()

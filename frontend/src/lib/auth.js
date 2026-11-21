@@ -31,3 +31,17 @@ export const fetchAuthConfig = () =>
 
 export const login = (username, password) =>
   api.post("/auth/login", { username, password }).then((r) => r.data);
+
+export const fetchMe = () => api.get("/auth/me", { timeout: 5000 }).then((r) => r.data);
+
+// Role hierarchy mirrors backend/auth.py ROLE_RANK. The server is the final
+// authority (it answers 401/403); this only decides what the UI offers.
+const ROLE_RANK = { viewer: 1, operator: 2, admin: 3 };
+
+// hasRole("operator") -> may this user perform operator actions?
+// Auth off: everything is allowed, exactly as the backend behaves.
+export const hasRole = (minRole) => {
+  if (!window.__nvAuthEnabled) return true;
+  const role = getUser()?.role;
+  return (ROLE_RANK[role] || 0) >= (ROLE_RANK[minRole] || 99);
+};

@@ -166,3 +166,38 @@ def test_device_delete_admin_only(auth_on):
     dev_id = r.json()["id"]
     assert requests.delete(f"{API}/devices/{dev_id}", headers=bearer("operator")).status_code == 403
     assert requests.delete(f"{API}/devices/{dev_id}", headers=bearer("admin")).status_code == 200
+
+
+# ---- #8: CORS default never grants credentialed cross-origin access ---- #
+def test_cors_wildcard_default_has_no_credentials():
+    assert server.CORS_ALLOW_ALL, "test server runs with the '*' default"
+    r = requests.get(f"{API}/auth/config", headers={"Origin": "http://evil.example"})
+    assert r.headers.get("access-control-allow-origin") == "*"
+    assert r.headers.get("access-control-allow-credentials") is None
+    pre = requests.options(f"{API}/devices", headers={
+        "Origin": "http://evil.example", "Access-Control-Request-Method": "DELETE",
+        "Access-Control-Request-Headers": "authorization"})
+    assert pre.headers.get("access-control-allow-credentials") is None
+
+
+def test_cors_warning_when_auth_on_with_wildcard(auth_on, monkeypatch, caplog):
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    with caplog.at_level("WARNING"):
+        auth.startup_warnings()
+    assert any("CORS_ORIGINS" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, ["*"]), ("", ["*"]), (" , ", ["*"]), ("*", ["*"]), ("http://a.com,*", ["*"]),
+    ("http://a.com, http://b.com ", ["http://a.com", "http://b.com"]),
+    ("http://host:8080/", ["http://host:8080"]),
+])
+def test_parse_cors_origins(raw, expected):
+    assert auth.parse_cors_origins(raw) == expected
+
+
+def test_cors_warning_covers_mixed_wildcard(auth_on, monkeypatch, caplog):
+    monkeypatch.setenv("CORS_ORIGINS", "http://a.com,*")
+    with caplog.at_level("WARNING"):
+        auth.startup_warnings()
+    assert any("CORS_ORIGINS" in r.getMessage() for r in caplog.records)

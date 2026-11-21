@@ -227,8 +227,11 @@ export default function Alerts() {
                   {new Date(a.timestamp).toLocaleString()}
                 </td>
                 <td>
-                  <span className={`font-mono text-[11px] uppercase ${a.acknowledged ? "text-[#16c79a]" : "text-[#f4d03f]"}`}>
-                    {a.acknowledged ? t("al.stateAck") : t("al.stateOpen")}
+                  <span
+                    className={`font-mono text-[11px] uppercase ${a.state === "resolved" ? "text-nv-muted" : a.acknowledged ? "text-[#16c79a]" : "text-[#f4d03f]"}`}
+                    title={a.resolved_at ? new Date(a.resolved_at).toLocaleString() : a.acknowledged_at ? new Date(a.acknowledged_at).toLocaleString() : undefined}
+                  >
+                    {a.state === "resolved" ? t("al.stateResolved") : a.acknowledged ? t("al.stateAck") : t("al.stateOpen")}
                   </span>
                 </td>
                 <td>

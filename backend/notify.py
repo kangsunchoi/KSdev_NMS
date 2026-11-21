@@ -18,6 +18,7 @@ import os
 import json
 import asyncio
 import logging
+import time
 import urllib.request
 
 logger = logging.getLogger("netvision.notify")
@@ -59,15 +60,47 @@ def _send_sync(alert: dict):
             logger.warning("Telegram notify failed: %s", e)
 
 
+# Storm guard (issue #11): at most this many notifications per rolling minute.
+NOTIFY_MAX_PER_MIN = int(os.environ.get("NOTIFY_MAX_PER_MIN", "20"))
+_sent_times: list = []
+_suppressed = 0
+_tasks: set = set()
+
+
+async def _deliver(alert: dict):
+    try:
+        await asyncio.to_thread(_send_sync, alert)
+    except Exception as e:  # never propagate
+        logger.warning("notify dispatch failed: %s", e)
+
+
+def _allow_now() -> bool:
+    global _suppressed
+    now = time.monotonic()
+    while _sent_times and now - _sent_times[0] > 60:
+        _sent_times.pop(0)
+    if len(_sent_times) >= NOTIFY_MAX_PER_MIN:
+        _suppressed += 1
+        if _suppressed == 1 or _suppressed % 50 == 0:
+            logger.warning("notify rate limit hit (%d/min): %d notification(s) suppressed",
+                           NOTIFY_MAX_PER_MIN, _suppressed)
+        return False
+    _sent_times.append(now)
+    return True
+
+
 async def notify_alert(alert: dict):
-    """Fire-and-forget notification for a newly created alert. Safe to await;
-    runs the blocking HTTP call in a thread so it won't stall the event loop."""
+    """Queue a notification for a newly created alert and return immediately.
+
+    The HTTP call runs in a background task (thread), so a slow or unreachable
+    Slack/Telegram never delays ingestion or the simulation loop (issue #11)."""
     if not _enabled():
         return
     sev = alert.get("severity", "info")
     if _SEV_RANK.get(sev, 0) < _SEV_RANK.get(NOTIFY_MIN_SEVERITY, 3):
         return
-    try:
-        await asyncio.to_thread(_send_sync, alert)
-    except Exception as e:  # never propagate
-        logger.warning("notify dispatch failed: %s", e)
+    if not _allow_now():
+        return
+    task = asyncio.create_task(_deliver(dict(alert)))
+    _tasks.add(task)  # keep a reference until done (asyncio only holds weak refs)
+    task.add_done_callback(_tasks.discard)

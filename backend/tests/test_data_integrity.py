@@ -203,3 +203,16 @@ def test_ambiguous_name_does_not_auto_create():
     for _ in range(3):
         requests.post(f"{API}/ingest?auto_create=true", json={"samples": [{"name": name, "latency_ms": 1}]})
     assert len([d for d in requests.get(f"{API}/devices").json() if d["name"] == name]) == 2
+
+
+@pytest.mark.parametrize("raw", [" 10.77.{a}.{b}", "FD00::{a:X}:{b:X}"])
+def test_non_canonical_ip_matches_after_auto_create(raw):
+    n = uuid.uuid4().int
+    ip = raw.format(a=n % 250 + 1, b=(n >> 8) % 250 + 1)
+    for _ in range(3):
+        requests.post(f"{API}/ingest?auto_create=true", json={"samples": [{"ip": ip, "latency_ms": 1}]})
+    norm = server._normalize_ip(ip)
+    assert len([d for d in requests.get(f"{API}/devices").json() if d["ip"] == norm]) == 1
+    # other collector paths resolve it too
+    r = requests.post(f"{API}/interfaces", json={"ip": ip, "interfaces": [{"ifindex": 1}]}).json()
+    assert r["matched"] is True

@@ -997,8 +997,12 @@ async def _find_device(did=None, ip=None, name=None):
         d = await db.devices.find_one({"id": did}, {"_id": 0})
         if d:
             return d
-    if ip and ip not in _PLACEHOLDER_IPS:
-        d = await db.devices.find_one({"ip": ip}, {"_id": 0})
+    if ip and ip.strip() not in _PLACEHOLDER_IPS:
+        # devices are stored with the normalized IP; legacy rows may hold the raw text
+        candidates = [ip, ip.strip()]
+        if _valid_ip(ip):
+            candidates.insert(0, _normalize_ip(ip))
+        d = await db.devices.find_one({"ip": {"$in": list(dict.fromkeys(candidates))}}, {"_id": 0})
         if d:
             return d
     if name:

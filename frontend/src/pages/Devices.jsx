@@ -330,14 +330,16 @@ export default function Devices() {
                     >
                       <Pencil size={14} />
                     </button>
-                    <button
-                      className="text-nv-muted hover:text-[#e74c3c]"
-                      onClick={() => { if (window.confirm(`${d.name} ${t("common.deleteQ")}`)) mDelete.mutate(d.id); }}
-                      data-testid={`device-delete-${d.id}`}
-                      title={t("common.delete")}
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    {isAdmin && (
+                      <button
+                        className="text-nv-muted hover:text-[#e74c3c]"
+                        onClick={() => { if (window.confirm(`${d.name} ${t("common.deleteQ")}`)) mDelete.mutate(d.id); }}
+                        data-testid={`device-delete-${d.id}`}
+                        title={t("common.delete")}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>

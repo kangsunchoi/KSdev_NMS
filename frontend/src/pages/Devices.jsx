@@ -122,6 +122,15 @@ const DeviceModal = ({ open, onClose, initial, onSubmit }) => {
   );
 };
 
+const EDITABLE = ["name", "ip", "vendor", "model", "protocol", "device_type", "zone"];
+
+// FastAPI error detail: a string (409/400) or a validation list (422)
+const apiError = (e) => {
+  const d = e?.response?.data?.detail;
+  if (Array.isArray(d)) return d.map((x) => x.msg).join(", ");
+  return d || e?.message || "error";
+};
+
 export default function Devices() {
   const { t } = useI18n();
   const qc = useQueryClient();
@@ -145,12 +154,12 @@ export default function Devices() {
   const mCreate = useMutation({
     mutationFn: createDevice,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["devices"] }); toast.success(t("dev.created")); },
-    onError: () => toast.error(t("dev.createFail")),
+    onError: (e) => toast.error(`${t("dev.createFail")}: ${apiError(e)}`),
   });
   const mUpdate = useMutation({
     mutationFn: ({ id, payload }) => updateDevice(id, payload),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["devices"] }); toast.success(t("dev.updated")); },
-    onError: () => toast.error(t("dev.updateFail")),
+    onError: (e) => toast.error(`${t("dev.updateFail")}: ${apiError(e)}`),
   });
   const mDelete = useMutation({
     mutationFn: deleteDevice,
@@ -158,14 +167,23 @@ export default function Devices() {
     onError: () => toast.error(t("dev.deleteFail")),
   });
 
-  const onSubmit = (form) => {
-    if (editing?.id) {
-      mUpdate.mutate({ id: editing.id, payload: form });
-    } else {
-      mCreate.mutate(form);
+  // Close the modal only after the server accepted the change, so a 409/422
+  // (duplicate or invalid IP) keeps the user's input. When editing, send only
+  // the fields that changed (legacy devices may hold an old-format IP).
+  const onSubmit = async (form) => {
+    try {
+      if (editing?.id) {
+        const changed = Object.fromEntries(
+          Object.entries(form).filter(([k, v]) => EDITABLE.includes(k) && v !== editing[k]));
+        if (Object.keys(changed).length) await mUpdate.mutateAsync({ id: editing.id, payload: changed });
+      } else {
+        await mCreate.mutateAsync(form);
+      }
+      setModalOpen(false);
+      setEditing(null);
+    } catch {
+      /* toast already shown by onError; keep the modal open */
     }
-    setModalOpen(false);
-    setEditing(null);
   };
 
   const filtered = useMemo(() => {

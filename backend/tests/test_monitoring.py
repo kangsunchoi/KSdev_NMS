@@ -21,7 +21,8 @@ API = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") + "/api"
 
 
 def _new_device():
-    ip = f"198.51.100.{uuid.uuid4().int % 250 + 2}"
+    n = uuid.uuid4().int
+    ip = f"10.{n % 250 + 1}.{(n >> 8) % 250 + 1}.{(n >> 16) % 250 + 2}"  # unique enough; IPs must not repeat
     name = f"MON-{uuid.uuid4().hex[:6]}"
     r = requests.post(f"{API}/devices", json={
         "name": name, "ip": ip, "vendor": "t", "model": "t", "protocol": "ICMP", "device_type": "switch"})

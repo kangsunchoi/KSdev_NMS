@@ -6,6 +6,7 @@ only run when conftest started the backend in this process.
 import asyncio
 import json
 import os
+import uuid
 import sys
 
 import pytest
@@ -261,3 +262,23 @@ async def test_ws_rejects_deleted_user(auth_on):
     with pytest.raises(websockets.exceptions.InvalidStatus):
         async with websockets.connect(f"{WS}?token={token}", open_timeout=5):
             pass
+
+
+def test_recreated_username_does_not_revive_old_token(auth_on):
+    old = _login_user("rbac-re", "viewer")
+    admin = bearer("admin")
+    assert requests.delete(f"{API}/auth/users/rbac-re", headers=admin).status_code == 200
+    assert requests.post(f"{API}/auth/users", headers=admin,
+                         json={"username": "rbac-re", "password": "pw-123456", "role": "admin"}).status_code == 200
+    auth._invalidate_user("rbac-re")  # rule out the cache: the token itself must not match
+    assert requests.get(f"{API}/auth/users", headers=old).status_code == 401
+
+
+def test_new_user_can_use_token_right_after_negative_cache(auth_on):
+    name = f"rbac-new-{uuid.uuid4().hex[:6]}"
+    ghost = {"Authorization": f"Bearer {auth.make_token(name, 'viewer')}"}
+    assert requests.get(f"{API}/devices", headers=ghost).status_code == 401  # caches "no such user"
+    assert requests.post(f"{API}/auth/users", headers=bearer("admin"),
+                         json={"username": name, "password": "pw-123456", "role": "viewer"}).status_code == 200
+    tok = requests.post(f"{API}/auth/login", json={"username": name, "password": "pw-123456"}).json()["token"]
+    assert requests.get(f"{API}/devices", headers={"Authorization": f"Bearer {tok}"}).status_code == 200

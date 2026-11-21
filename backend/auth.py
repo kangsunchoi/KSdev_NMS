@@ -208,6 +208,13 @@ USER_CACHE_SEC = float(os.environ.get("AUTH_USER_CACHE_SEC", "5"))
 _user_cache: dict = {}  # username -> (expires_at, doc or None)
 
 
+_USER_CACHE_MAX = 1000
+
+
+def _new_token_version() -> int:
+    return secrets.randbelow(2**31 - 1) + 1  # never 0 (= tokens/users from before #49)
+
+
 def _invalidate_user(username: str) -> None:
     _user_cache.pop(username, None)
 
@@ -218,6 +225,11 @@ async def _live_user(db, username: str) -> Optional[dict]:
     if hit and hit[0] > now:
         return hit[1]
     doc = await db.users.find_one({"username": username}, {"_id": 0, "role": 1, "token_version": 1})
+    if len(_user_cache) >= _USER_CACHE_MAX:  # bounded: drop expired entries, else start over
+        for k in [k for k, (exp, _) in _user_cache.items() if exp <= now]:
+            del _user_cache[k]
+        if len(_user_cache) >= _USER_CACHE_MAX:
+            _user_cache.clear()
     _user_cache[username] = (now + USER_CACHE_SEC, doc)
     return doc
 
@@ -313,8 +325,11 @@ def register_routes(api_router: APIRouter, db):
             raise HTTPException(409, "User already exists")
         doc = {"username": payload.username, "role": payload.role,
                "password_hash": hash_password(payload.password),
+               # random start: a re-created username never revives the old account's tokens
+               "token_version": _new_token_version(),
                "created_at": datetime.now(timezone.utc).isoformat()}
         await db.users.insert_one(doc)
+        _invalidate_user(payload.username)  # drop a cached "no such user"
         return {"username": doc["username"], "role": doc["role"]}
 
     @api_router.patch("/auth/users/{username}")
@@ -439,8 +454,10 @@ async def ensure_default_admin(db):
     await db.users.insert_one({
         "username": user, "role": "admin",
         "password_hash": hash_password(pw),
+        "token_version": _new_token_version(),
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
+    _invalidate_user(user)
     if pw == "admin":
         logger.warning("Created default admin '%s' with password 'admin' — CHANGE IT NOW "
                        "(set ADMIN_PASSWORD in .env before first start, or update via /api/auth/users).", user)

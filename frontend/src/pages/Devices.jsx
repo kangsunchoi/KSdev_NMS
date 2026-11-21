@@ -30,7 +30,7 @@ const empty = {
   zone: "",
 };
 
-const DeviceModal = ({ open, onClose, initial, onSubmit }) => {
+const DeviceModal = ({ open, onClose, initial, onSubmit, saving }) => {
   const { t } = useI18n();
   const [form, setForm] = useState(initial || empty);
   React.useEffect(() => setForm(initial || empty), [initial, open]);
@@ -111,7 +111,8 @@ const DeviceModal = ({ open, onClose, initial, onSubmit }) => {
           <button
             className="nv-btn nv-btn-primary"
             onClick={() => onSubmit(form)}
-            disabled={!form.name || !form.ip}
+            disabled={saving || !form.name?.trim() || !form.ip?.trim()}
+            aria-busy={saving}
             data-testid="device-form-submit"
           >
             {initial?.id ? t("common.save") : t("common.create")}
@@ -374,6 +375,7 @@ export default function Devices() {
         onClose={() => { setModalOpen(false); setEditing(null); }}
         initial={editing}
         onSubmit={onSubmit}
+        saving={mCreate.isPending || mUpdate.isPending}
       />
 
       {chartDevice && (

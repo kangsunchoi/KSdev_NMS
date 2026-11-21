@@ -98,3 +98,69 @@ def test_rca_when_child_reported_before_parent_in_one_batch(live):
     _ingest({"ip": child["ip"], "reachable": False}, {"ip": parent["ip"], "reachable": False})
     child_alert = [a for a in _alerts(child["id"]) if a["state"] == "active"][0]
     assert child_alert.get("correlated_to") == parent["id"]
+
+
+# ---- review of PR #38: broadcast rate bound, index-creation isolation ---- #
+def test_broadcast_rate_bounded_under_constant_ingest(monkeypatch):
+    builds = []
+
+    async def slow_snapshot():
+        builds.append(1)
+        await asyncio.sleep(0.02)
+        return {"type": "tick"}
+
+    async def noop_broadcast(_msg):
+        pass
+
+    monkeypatch.setattr(server, "BROADCAST_DEBOUNCE_SEC", 0.05)
+    monkeypatch.setattr(server, "_build_snapshot", slow_snapshot)
+    monkeypatch.setattr(server.ws_manager, "broadcast", noop_broadcast)
+    monkeypatch.setattr(server.ws_manager, "clients", {object()})
+    monkeypatch.setattr(server, "_broadcast_task", None)
+
+    async def flood():
+        end = asyncio.get_running_loop().time() + 0.7
+        while asyncio.get_running_loop().time() < end:
+            server._schedule_broadcast()
+            await asyncio.sleep(0.005)
+        task = server._broadcast_task
+        if task:
+            task.cancel()
+
+    asyncio.run(flood())
+    monkeypatch.setattr(server, "_broadcast_task", None)
+    # each snapshot waits the debounce first: <= 0.7 / (0.05 + 0.02) + 1 ~= 11
+    assert 3 <= len(builds) <= 12, len(builds)
+
+
+def test_one_failing_index_does_not_skip_the_rest(monkeypatch):
+    created = []
+
+    class Coll:
+        def __init__(self, name):
+            self.name = name
+
+        async def create_index(self, keys, **opts):
+            if self.name == "devices" and keys == "id":
+                raise RuntimeError("E11000 duplicate key")
+            created.append((self.name, str(keys)))
+
+        def aggregate(self, _pipeline):
+            class _C:
+                async def to_list(self, _n):
+                    return [{"_id": "dup-1", "n": 2}]
+            return _C()
+
+    class FakeDB:
+        def __getitem__(self, name):
+            return Coll(name)
+
+        def __getattr__(self, name):
+            return Coll(name)
+
+    monkeypatch.setattr(server, "db", FakeDB())
+    failed = asyncio.run(server._ensure_indexes())
+    assert failed == [("devices", "id")]
+    assert len(created) == len(server._INDEXES) - 1
+    assert ("links", str([("source_id", 1), ("target_id", 1)])) in created
+    assert ("alerts", "id") in created

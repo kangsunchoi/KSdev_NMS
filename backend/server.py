@@ -1647,8 +1647,9 @@ _broadcast_dirty = False
 async def _delayed_broadcast():
     global _broadcast_dirty
     try:
-        await asyncio.sleep(BROADCAST_DEBOUNCE_SEC)
         while True:
+            # wait before every snapshot, so constant ingest caps the rate at ~1/(debounce+build)
+            await asyncio.sleep(BROADCAST_DEBOUNCE_SEC)
             _broadcast_dirty = False
             if ws_manager.clients:
                 await ws_manager.broadcast(await _build_snapshot())
@@ -1921,26 +1922,50 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+_INDEXES = [
+    # (collection, keys, options). Each one is created on its own, so one failure
+    # (e.g. legacy duplicate ids blocking a unique index) never skips the rest.
+    ("device_metrics", "ts_dt", {"expireAfterSeconds": _METRIC_TTL_SEC}),
+    ("device_metrics", [("device_id", 1), ("ts", 1)], {}),
+    ("devices", "ip", {}),  # speed up ingest lookups by IP
+    ("devices", "name", {}),
+    ("links", [("source_id", 1), ("target_id", 1)], {"unique": True}),
+    ("unified_metrics", "ts_dt", {"expireAfterSeconds": _METRIC_TTL_SEC}),
+    ("unified_metrics", [("device_id", 1), ("metric_name", 1), ("ts", 1)], {}),
+    ("device_kv", [("device_id", 1), ("metric_name", 1)], {"unique": True}),
+    # alerts: counted every 5s and on every ingest; history is kept for days now
+    ("alerts", [("acknowledged", 1), ("severity", 1)], {}),
+    ("alerts", [("device_id", 1), ("severity", 1), ("timestamp", -1)], {}),
+    ("alerts", [("timestamp", -1)], {}),
+    ("alerts", "id", {"unique": True}),
+    ("devices", "id", {"unique": True}),
+]
+
+
+async def _ensure_indexes() -> list:
+    """Create every index independently; return the ones that failed."""
+    failed = []
+    for coll, keys, opts in _INDEXES:
+        try:
+            await db[coll].create_index(keys, **opts)
+        except Exception as e:
+            failed.append((coll, keys))
+            logger.warning("index create failed on %s %s: %s", coll, keys, e)
+            if coll == "devices" and keys == "id":
+                try:
+                    dups = await db.devices.aggregate([
+                    {"$group": {"_id": "$id", "n": {"$sum": 1}}}, {"$match": {"n": {"$gt": 1}}},
+                        {"$limit": 20}]).to_list(20)
+                    logger.warning("duplicate device ids blocking the unique index: %s",
+                                   [d["_id"] for d in dups])
+                except Exception:
+                    pass
+    return failed
+
+
 @app.on_event("startup")
 async def startup():
-    # TTL index for metric history (24h)
-    try:
-        await db.device_metrics.create_index("ts_dt", expireAfterSeconds=_METRIC_TTL_SEC)
-        await db.device_metrics.create_index([("device_id", 1), ("ts", 1)])
-        await db.devices.create_index("ip")  # speed up ingest lookups by IP
-        await db.devices.create_index("id", unique=True)
-        await db.devices.create_index("name")
-        await db.links.create_index([("source_id", 1), ("target_id", 1)], unique=True)
-        await db.unified_metrics.create_index("ts_dt", expireAfterSeconds=_METRIC_TTL_SEC)
-        await db.unified_metrics.create_index([("device_id", 1), ("metric_name", 1), ("ts", 1)])
-        await db.device_kv.create_index([("device_id", 1), ("metric_name", 1)], unique=True)
-        # alerts: counted every 5s and on every ingest; history is kept for days now
-        await db.alerts.create_index([("acknowledged", 1), ("severity", 1)])
-        await db.alerts.create_index([("device_id", 1), ("severity", 1), ("timestamp", -1)])
-        await db.alerts.create_index([("timestamp", -1)])
-        await db.alerts.create_index("id", unique=True)
-    except Exception as e:
-        logger.warning("index create failed: %s", e)
+    await _ensure_indexes()
     await _normalize_stored_ips()
     # One-time migration: alerts created before the lifecycle fields existed (issue #10)
     await db.alerts.update_many({"state": {"$exists": False}, "acknowledged": True},

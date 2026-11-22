@@ -42,6 +42,7 @@ _INDEXES = [
     ("device_metrics", "ts_dt", {"expireAfterSeconds": _METRIC_TTL_SEC}),
     ("device_metrics", [("device_id", 1), ("ts", 1)], {}),
     ("devices", "ip", {}),  # speed up ingest lookups by IP
+    ("devices", "managed_address", {"unique": True, "sparse": True}),
     ("devices", "name", {}),
     ("links", [("source_id", 1), ("target_id", 1)], {"unique": True}),
     ("unified_metrics", "ts_dt", {"expireAfterSeconds": _METRIC_TTL_SEC}),

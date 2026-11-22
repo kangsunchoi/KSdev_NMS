@@ -1,13 +1,15 @@
 """Pydantic models: stored documents and request payloads."""
 import uuid
 from datetime import datetime, timezone
-from typing import List, Literal, Optional
+from typing import Annotated, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from netvision.helpers import _is_placeholder, _normalize_ip, _valid_ip
+from netvision.helpers import _normalize_ip, _valid_ipv4
 
-DeviceType = Literal["switch", "plc", "hmi", "sensor"]
+SiteId = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
+
+DeviceType = Literal["switch", "plc", "hmi", "sensor", "l2-switch", "l3-switch", "router", "server", "storage", "workstation", "access-point", "wireless-controller"]
 DeviceStatus = Literal["online", "warning", "critical", "offline"]
 AlertSeverity = Literal["info", "warning", "critical"]
 
@@ -21,6 +23,7 @@ class DeviceBase(BaseModel):
     protocol: str
     device_type: DeviceType
     zone: Optional[str] = None
+    site_id: SiteId = "default"
 
 
 class DeviceCreate(DeviceBase):
@@ -28,10 +31,8 @@ class DeviceCreate(DeviceBase):
     @classmethod
     def _check_ip(cls, v: str) -> str:
         v = (v or "").strip()
-        if not _valid_ip(v):
-            raise ValueError("ip must be a valid IPv4/IPv6 address")
-        if _is_placeholder(v):
-            raise ValueError("0.0.0.0 / :: is reserved for auto-created devices")
+        if not _valid_ipv4(v):
+            raise ValueError("ip must identify an IPv4 device")
         return _normalize_ip(v)
 
     @field_validator("name")
@@ -56,7 +57,7 @@ class DeviceUpdate(BaseModel):
 class Device(DeviceBase):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     status: DeviceStatus = "online"
-    latency_ms: float = 0.0
+    latency_ms: Optional[float] = None
     packet_loss: float = 0.0
     uptime_pct: float = 100.0
     cpu_pct: float = 0.0
@@ -108,10 +109,18 @@ class DiscoveryUpdate(BaseModel):
     last_created: Optional[int] = None
     last_message: Optional[str] = None
 
+    @field_validator("subnet")
+    @classmethod
+    def _ipv4_subnet(cls, value):
+        if value and ":" in value:
+            raise ValueError("Only IPv4 discovery ranges are supported")
+        return value
+
 
 class DiscoveryRegister(BaseModel):
     model_config = ConfigDict(extra="ignore")
     ips: List[str] = []
+    site_id: SiteId = "default"
 
 
 class IfRow(BaseModel):
@@ -129,6 +138,7 @@ class IfRow(BaseModel):
 
 class InterfacesPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
+    site_id: Optional[SiteId] = None
     device_id: Optional[str] = None
     ip: Optional[str] = None
     name: Optional[str] = None
@@ -143,6 +153,7 @@ class FdbEntry(BaseModel):
 
 class FdbPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
+    site_id: Optional[SiteId] = None
     device_id: Optional[str] = None
     ip: Optional[str] = None
     name: Optional[str] = None
@@ -151,6 +162,7 @@ class FdbPayload(BaseModel):
 
 class AssetPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
+    site_id: Optional[SiteId] = None
     parent_device_id: Optional[str] = None
     parent_ip: Optional[str] = None
     parent_name: Optional[str] = None
@@ -186,6 +198,7 @@ class LinksPayload(BaseModel):
 
 class GenericSample(BaseModel):
     model_config = ConfigDict(extra="ignore")
+    site_id: Optional[SiteId] = None
     device_id: Optional[str] = None
     ip: Optional[str] = None
     name: Optional[str] = None
@@ -211,6 +224,7 @@ class MetricSample(BaseModel):
     Provide whatever metrics you have — omitted fields keep their previous value.
     """
     model_config = ConfigDict(extra="ignore")
+    site_id: Optional[SiteId] = None
     device_id: Optional[str] = None
     ip: Optional[str] = None
     name: Optional[str] = None

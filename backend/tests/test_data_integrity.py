@@ -11,7 +11,7 @@ if "server" not in sys.modules:
     pytest.skip("data-integrity tests need the in-process test server", allow_module_level=True)
 
 import server  # noqa: E402,F401  (in-process test server; netvision.* below is its code)
-from netvision import database, devices, helpers  # noqa: E402
+from netvision import database, devices  # noqa: E402
 
 API = os.environ["REACT_APP_BACKEND_URL"].rstrip("/") + "/api"
 
@@ -190,12 +190,9 @@ def test_legacy_duplicate_ip_devices_still_editable():
     assert r.status_code == 200 and r.json()["zone"] == "Z1"
 
 
-def test_ip_normalized_for_duplicate_check():
-    d = _dev(ip="fe80::1:2")
-    assert requests.get(f"{API}/devices/{d['id']}").json()["ip"] == "fe80::1:2"
-    r = requests.post(f"{API}/devices", json={
-        "name": "UP", "ip": "FE80::1:2", "vendor": "t", "model": "t", "protocol": "x", "device_type": "switch"})
-    assert r.status_code == 409
+def test_ipv6_create_rejected():
+    body = {"name": "IPv6", "ip": "fe80::1:2", "vendor": "t", "model": "t", "protocol": "x", "device_type": "switch"}
+    assert requests.post(f"{API}/devices", json=body).status_code == 422
 
 
 def test_ambiguous_name_does_not_auto_create():
@@ -206,14 +203,43 @@ def test_ambiguous_name_does_not_auto_create():
     assert len([d for d in requests.get(f"{API}/devices").json() if d["name"] == name]) == 2
 
 
-@pytest.mark.parametrize("raw", [" 10.77.{a}.{b}", "FD00::{a:X}:{b:X}"])
-def test_non_canonical_ip_matches_after_auto_create(raw):
-    n = uuid.uuid4().int
-    ip = raw.format(a=n % 250 + 1, b=(n >> 8) % 250 + 1)
-    for _ in range(3):
-        requests.post(f"{API}/ingest?auto_create=true", json={"samples": [{"ip": ip, "latency_ms": 1}]})
-    norm = helpers._normalize_ip(ip)
-    assert len([d for d in requests.get(f"{API}/devices").json() if d["ip"] == norm]) == 1
-    # other collector paths resolve it too
-    r = requests.post(f"{API}/interfaces", json={"ip": ip, "interfaces": [{"ifindex": 1}]}).json()
-    assert r["matched"] is True
+def test_candidate_approval_and_site_isolation():
+    ip = _ip()
+    sites = ("line-a", "line-b")
+    ids = []
+    for site in sites:
+        payload = {"site_id": site, "ips": [ip, "fd00::17", ip]}
+        register = requests.post(f"{API}/discovery/register", json=payload).json()
+        assert (register["created"], register["queued"], register["new_ips"]) == (0, 1, [ip])
+        assert requests.post(f"{API}/discovery/register", json=payload).json()["queued"] == 0
+        rows = requests.get(f"{API}/devices", params={"site_id": site}).json()
+        assert all(d["ip"] != ip for d in rows)
+        pending = requests.get(f"{API}/discovery/candidates").json()
+        candidates = [d for d in pending if d["site_id"] == site and d["ip"] == ip]
+        assert len(candidates) == 1
+        assert all(d["ip"] != "fd00::17" for d in pending)
+        url = f"{API}/discovery/candidates/{candidates[0]['id']}/approve"
+        device = requests.post(url).json()
+        assert device["site_id"] == site
+        assert requests.post(url).json()["id"] == device["id"]
+        ids.append(device["id"])
+    assert ids[0] != ids[1]
+    response = requests.post(f"{API}/ingest", json={"samples": [{"ip": ip, "latency_ms": 13}]}).json()
+    assert response["updated"] == 0
+    response = requests.post(f"{API}/ingest", json={"samples": [{"site_id": sites[0], "ip": ip, "latency_ms": 13}]}).json()
+    assert response["updated"] == 1
+    assert requests.get(f"{API}/devices/{ids[0]}").json()["latency_ms"] == 13
+    assert requests.get(f"{API}/devices/{ids[1]}").json()["latency_ms"] is None
+
+
+def test_collector_auto_create_requires_approval():
+    ip = _ip()
+    body = {"samples": [{"ip": " " + ip, "latency_ms": 7}, {"ip": "fd00::17", "latency_ms": 1}]}
+    r = requests.post(f"{API}/ingest?auto_create=true", json=body).json()
+    assert (r["updated"], r["created"], r["queued"]) == (0, 0, 1)
+    assert requests.post(f"{API}/ingest?auto_create=true", json=body).json()["queued"] == 0
+    candidates = requests.get(f"{API}/discovery/candidates").json()
+    row = next(c for c in candidates if c["ip"] == ip)
+    assert all(c["ip"] != "fd00::17" for c in candidates)
+    assert requests.post(f"{API}/discovery/candidates/{row['id']}/approve").status_code == 200
+    assert requests.post(f"{API}/ingest", json=body).json()["updated"] == 1

@@ -17,7 +17,10 @@ import { useI18n } from "../lib/i18n";
 import { Plus, Pencil, Trash2, Eraser, Search, Download, Network, LineChart as LineIcon } from "lucide-react";
 import { toast } from "sonner";
 
-const TYPES = ["switch", "plc", "hmi", "sensor"];
+import { DeviceIcon } from "../components/DeviceIcon";
+import { useSearchParams } from "react-router-dom";
+
+const TYPES = ["switch", "plc", "hmi", "sensor", "l2-switch", "l3-switch", "router", "server", "storage", "workstation", "access-point", "wireless-controller"];
 const ZONES = ["Cell-A", "Cell-B", "Utilities"];
 
 const empty = {
@@ -51,7 +54,7 @@ const DeviceModal = ({ open, onClose, initial, onSubmit, saving }) => {
       <div className="nv-panel w-[480px] max-w-[92vw]">
         <div className="px-4 py-3 border-b border-nv-border flex items-center justify-between">
           <span className="nv-section-title">{initial?.id ? t("dev.editDevice") : t("dev.addDevice")}</span>
-          <button className="text-nv-muted hover:text-white" onClick={onClose} data-testid="device-modal-close">✕</button>
+          <button className="text-nv-muted hover:text-nv-text" onClick={onClose} data-testid="device-modal-close">✕</button>
         </div>
         <div className="p-4 space-y-3">
           {FIELDS.map(({ k, l }) => (
@@ -67,7 +70,7 @@ const DeviceModal = ({ open, onClose, initial, onSubmit, saving }) => {
           ))}
           <div>
             <div className="nv-label mb-1">{t("dev.fType")}</div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {TYPES.map((ty) => (
                 <button
                   type="button"
@@ -133,7 +136,7 @@ const apiError = (e) => {
 };
 
 export default function Devices() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const qc = useQueryClient();
   const { data: devices = [], isLoading } = useQuery({
     queryKey: ["devices"],
@@ -148,6 +151,8 @@ export default function Devices() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState("all");
+  const [params, setParams] = useSearchParams();
+  const linkedDevice = params.get("device");
   const [search, setSearch] = useState("");
   const [chartDevice, setChartDevice] = useState(null);
   const [ifDevice, setIfDevice] = useState(null);
@@ -190,6 +195,7 @@ export default function Devices() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return devices
+      .filter((d) => !linkedDevice || d.id === linkedDevice)
       .filter((d) => filter === "all" || d.device_type === filter)
       .filter((d) =>
         !q ||
@@ -199,7 +205,7 @@ export default function Devices() {
         d.model.toLowerCase().includes(q) ||
         d.protocol.toLowerCase().includes(q)
       );
-  }, [devices, filter, search]);
+  }, [devices, filter, search, linkedDevice]);
 
   const handleExport = () => {
     const rows = filtered.map((d) => ({
@@ -223,11 +229,11 @@ export default function Devices() {
   };
 
   return (
-    <div className="p-6" data-testid="devices-page">
-      <div className="flex items-center justify-between mb-5">
+    <div className="nv-page" data-testid="devices-page">
+      <div className="nv-page-header">
         <div>
           <div className="text-[11px] tracking-[0.2em] text-nv-muted uppercase font-mono">{t("dev.assetRegistry")}</div>
-          <h1 className="text-[22px] font-semibold tracking-tight">{t("dev.inventory")}</h1>
+          <h1 className="nv-page-title">{t("dev.inventory")}</h1>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -258,8 +264,9 @@ export default function Devices() {
       </div>
 
       {/* Filter chips + search */}
-      <div className="flex gap-2 mb-3 items-center flex-wrap">
-        {["all", ...TYPES].map((ty) => (
+      <div className="nv-filter-toolbar">
+        {linkedDevice && <button type="button" className="nv-btn" onClick={() => setParams({})}>{lang === "ko" ? "장비 선택 해제" : "Clear device selection"}</button>}
+        {["all", ...TYPES.filter(ty => devices.some(d => d.device_type === ty))].map((ty) => (
           <button
             key={ty}
             onClick={() => setFilter(ty)}
@@ -281,7 +288,7 @@ export default function Devices() {
           {search && (
             <button
               onClick={() => setSearch("")}
-              className="text-[11px] text-nv-muted hover:text-white font-mono"
+              className="text-[11px] text-nv-muted hover:text-nv-text font-mono"
               data-testid="devices-search-clear"
             >
               {t("common.clear").toUpperCase()}
@@ -293,13 +300,14 @@ export default function Devices() {
         </div>
       </div>
 
-      <div className="nv-panel overflow-hidden">
+      <div className="nv-panel overflow-x-auto">
         <table className="nv-table" data-testid="devices-table">
           <thead>
             <tr>
               <th>{t("dev.colStatus")}</th>
               <th>{t("dev.colName")}</th>
               <th>{t("dev.colType")}</th>
+              <th>{t("disc.site")}</th>
               <th>{t("dev.colZone")}</th>
               <th>{t("dev.colIp")}</th>
               <th>{t("dev.colVendorModel")}</th>
@@ -313,20 +321,21 @@ export default function Devices() {
             {filtered.map((d) => (
               <tr key={d.id} data-testid={`device-row-${d.id}`}>
                 <td>
-                  <StatusDot status={d.status} pulse={d.status !== "online"} testId={`device-status-${d.id}`} />
+                  <StatusDot status={d.status} pulse={d.status !== "online"} label={d.stale ? (lang === "ko" ? "수집 지연" : "Telemetry stale") : d.status} testId={`device-status-${d.id}`} />
                 </td>
-                <td className="font-mono text-nv-text">{d.name}</td>
+                <td className="font-mono text-nv-text"><DeviceIcon type={d.device_type}/>{d.name}</td>
                 <td className="uppercase text-[11px] tracking-wider text-nv-muted">{d.device_type}</td>
-                <td className="font-mono text-[11px] text-[#16c79a]">{d.zone || "—"}</td>
-                <td className="font-mono text-[#16c79a]">{d.ip}</td>
+                <td className="font-mono">{d.site_id || "default"}</td>
+                <td className="font-mono text-[11px] text-[#09654b]">{d.zone || "—"}</td>
+                <td className="font-mono text-[#09654b]">{d.ip}</td>
                 <td className="text-[12px]">{d.vendor} <span className="text-nv-muted">/ {d.model}</span></td>
                 <td className="font-mono text-[11px] text-nv-muted">{d.protocol}</td>
-                <td className="font-mono">{d.latency_ms}ms</td>
+                <td className="font-mono">{d.latency_ms == null ? t("dash.notMeasured") : `${d.latency_ms} ms`}</td>
                 <td className="font-mono">{d.cpu_pct}%</td>
                 <td>
                   <div className="flex gap-3 items-center">
                     <button
-                      className="text-nv-muted hover:text-[#16c79a]"
+                      className="text-nv-muted hover:text-[#09654b]"
                       onClick={() => setChartDevice(d)}
                       data-testid={`device-chart-${d.id}`}
                       title={t("dev.history")}
@@ -334,7 +343,7 @@ export default function Devices() {
                       <LineIcon size={14} />
                     </button>
                     <button
-                      className="text-nv-muted hover:text-[#16c79a]"
+                      className="text-nv-muted hover:text-[#09654b]"
                       onClick={() => setIfDevice(d)}
                       data-testid={`device-interfaces-${d.id}`}
                       title={t("dev.interfaces")}
@@ -342,7 +351,7 @@ export default function Devices() {
                       <Network size={14} />
                     </button>
                     <button
-                      className="text-nv-muted hover:text-[#16c79a]"
+                      className="text-nv-muted hover:text-[#09654b]"
                       onClick={() => { setEditing(d); setModalOpen(true); }}
                       data-testid={`device-edit-${d.id}`}
                       title={t("common.edit")}
@@ -351,7 +360,7 @@ export default function Devices() {
                     </button>
                     {isAdmin && (
                       <button
-                        className="text-nv-muted hover:text-[#e74c3c]"
+                        className="text-nv-muted hover:text-[#ae2832]"
                         onClick={() => { if (window.confirm(`${d.name} ${t("common.deleteQ")}`)) mDelete.mutate(d.id); }}
                         data-testid={`device-delete-${d.id}`}
                         title={t("common.delete")}

@@ -1,511 +1,259 @@
-import React, { useMemo, useRef, useEffect, useState } from "react";
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { deviceIcons, DeviceIcon } from "../components/DeviceIcon";
 import CytoscapeComponent from "react-cytoscapejs";
 import { useQuery } from "@tanstack/react-query";
-import { fetchTopology } from "../lib/api";
-import { api } from "../lib/api";
-import { StatusDot } from "../components/StatusDot";
-import { X, ChevronDown, ChevronRight, Boxes } from "lucide-react";
+import { ChevronDown, Crosshair, Minus, Plus, X } from "lucide-react";
+import { api, fetchAlerts, fetchTopology } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 
-const STATUS_COLOR = {
-  online: "#16c79a",
-  warning: "#f4d03f",
-  critical: "#e74c3c",
-  offline: "#6b7280",
+const BLACK = "#252b32";
+const ORANGE = "#bc580e";
+const RED = "#c73437";
+const BLUE = "#205ec3";
+const COLOR = { online: BLACK, warning: ORANGE, offline: RED, critical: RED };
+const INK = {
+  plc: '<rect x="5" y="5" width="30" height="22" rx="2"/><path d="M12 5v22m7-22v22m7-22v22M8 10v4"/>',
+  hmi: '<rect x="4" y="4" width="32" height="21" rx="2"/><path d="M20 25v4m-7 0h14"/>',
+  sensor: '<rect x="10" y="5" width="20" height="22" rx="3"/><path d="M14 16h3l2-5 3 10 2-5h2"/>',
+  unmanaged_segment: '<rect x="3" y="10" width="34" height="14" rx="2" stroke-dasharray="4 2"/><path d="M10 17h3m5 0h3m5 0h3"/>',
+  asset: '<rect x="8" y="4" width="24" height="24" rx="2"/><path d="M13 11h14m-14 6h10m-10 5h7"/>',
 };
+const ICONS = Object.fromEntries(Object.entries(INK).map(([key, value]) => [
+  key, "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="32" viewBox="0 0 40 32"><g fill="white" stroke="#252b32" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">' + value + '</g></svg>'
+  ),
+]));
+const LAYOUT = { name: "cose", animate: false, fit: true, padding: 48, idealEdgeLength: () => 115, nodeRepulsion: () => 9000, nodeDimensionsIncludeLabels: true };
+const STORAGE_KEY = "nv_topo_link_style";
 
-const TYPE_SHAPE = {
-  switch: "round-rectangle",
-  plc: "hexagon",
-  hmi: "diamond",
-  sensor: "ellipse",
-  unmanaged_segment: "round-rectangle",
-  asset: "round-rectangle",
-};
-
-const TYPE_BASE = {
-  switch: "#3b82f6",
-  plc: "#16c79a",
-  hmi: "#a78bfa",
-  sensor: "#94a3b8",
-  unmanaged_segment: "#475569",
-  asset: "#0e7490",
-};
-
-// Link drawing style: "bezier" (curved, default) | "taxi" (orthogonal).
-// Note: in taxi mode parallel links between the same two nodes can overlap.
-const LINK_STYLE_KEY = "nv_topo_link_style";
-const LINK_STYLES = ["bezier", "taxi"];
-
-const loadLinkStyle = () => {
-  try {
-    const v = window.localStorage.getItem(LINK_STYLE_KEY);
-    return LINK_STYLES.includes(v) ? v : "bezier";
-  } catch (e) {
-    return "bezier";
-  }
-};
-
-const saveLinkStyle = (v) => {
-  try {
-    window.localStorage.setItem(LINK_STYLE_KEY, v);
-  } catch (e) {
-    /* storage unavailable (private mode etc.) — keep in-memory only */
-  }
-};
-
-// Cytoscape stylesheet, split around the optional taxi-edge override so the
-// override keeps its original position (after the base edge rule, before the
-// edge-label / kind rules). Module constants => stable references.
-const BASE_STYLESHEET_HEAD = [
-  {
-    selector: "node",
-    style: {
-      "background-color": "data(bg)",
-      "border-color": "data(border)",
-      "border-width": 2,
-      shape: "data(shape)",
-      label: "data(label)",
-      color: "#f8f9fa",
-      "font-family": "JetBrains Mono, monospace",
-      "font-size": 10,
-      "text-valign": "bottom",
-      "text-margin-y": 6,
-      "text-outline-color": "#1a1a2e",
-      "text-outline-width": 2,
-      width: 36,
-      height: 36,
-    },
-  },
-  { selector: "node[type = 'switch']", style: { width: 56, height: 30 } },
-  { selector: "node[type = 'plc']", style: { width: 44, height: 40 } },
-  {
-    selector: "node[?is_zone]",
-    style: {
-      "background-color": "#16213e",
-      "background-opacity": 0.45,
-      "border-color": "#2a3b55",
-      "border-width": 1,
-      "border-style": "dashed",
-      shape: "round-rectangle",
-      label: "data(label)",
-      color: "#16c79a",
-      "font-size": 11,
-      "font-family": "JetBrains Mono, monospace",
-      "text-valign": "top",
-      "text-halign": "left",
-      "text-margin-y": 6,
-      "text-margin-x": 10,
-      "text-transform": "uppercase",
-      "padding-top": "16px",
-      "padding-bottom": "12px",
-      "padding-left": "12px",
-      "padding-right": "12px",
-    },
-  },
-  {
-    selector: "node:selected",
-    style: {
-      "border-color": "#16c79a",
-      "border-width": 4,
-      "overlay-color": "#16c79a",
-      "overlay-opacity": 0.18,
-      "overlay-padding": 8,
-    },
-  },
-  {
-    selector: "edge",
-    style: {
-      width: 1.2,
-      "line-color": "#2a3b55",
-      "target-arrow-color": "#2a3b55",
-      "curve-style": "bezier",
-    },
-  },
-];
-
-const TAXI_EDGE_STYLE = [
-  {
-    selector: "edge",
-    style: {
-      "curve-style": "taxi",
-      // breadthfirst lays out top-down, so route vertical-first
-      "taxi-direction": "vertical",
-      "taxi-turn": "50%",
-      "taxi-turn-min-distance": 8,
-    },
-  },
-];
-
-const BASE_STYLESHEET_TAIL = [
-  {
-    // LLDP/CDP port label, e.g. "Gi0/1→eth0" (empty labels are skipped)
-    selector: "edge[?label]",
-    style: {
-      label: "data(label)",
-      color: "#16c79a",
-      "font-family": "JetBrains Mono, monospace",
-      "font-size": 9,
-      "text-rotation": "autorotate",
-      "text-background-color": "#16213e",
-      "text-background-opacity": 0.9,
-      "text-background-padding": "2px",
-      "text-background-shape": "roundrectangle",
-      "text-border-color": "#2a3b55",
-      "text-border-width": 1,
-      "text-border-opacity": 1,
-      // hide when zoomed far out (rendered size < 6px)
-      "min-zoomed-font-size": 6,
-    },
-  },
-  {
-    selector: "edge[kind = 'unmanaged']",
-    style: { "line-style": "dashed", "line-color": "#64748b", "target-arrow-shape": "none" },
-  },
-  {
-    selector: "edge[kind = 'asset']",
-    style: { "line-style": "dotted", "line-color": "#0e7490", width: 1 },
-  },
-  {
-    selector: "node[?is_segment]",
-    style: {
-      "background-opacity": 0.3,
-      "border-style": "dashed",
-      "border-color": "#94a3b8",
-      shape: "round-rectangle",
-      width: 54,
-      height: 34,
-      "font-size": 9,
-    },
-  },
-  {
-    selector: "node[?is_asset]",
-    style: { width: 24, height: 24, "font-size": 9 },
-  },
-];
-
-// Stable layout reference. react-cytoscapejs runs it once on mount; later
-// re-runs happen only when the node set changes (see effect in Topology).
-const LAYOUT = { name: "breadthfirst", directed: true, padding: 30, spacingFactor: 1.1 };
-
-// Sorted node ids — changes only when nodes are added or removed.
-const nodeSignature = (elements) =>
-  elements
-    .filter((el) => el.data && el.data.source == null)
-    .map((el) => el.data.id)
-    .sort()
-    .join("|");
-
-export default function Topology() {
-  const { t } = useI18n();
-  const { data, isLoading } = useQuery({
-    queryKey: ["topology"],
-    queryFn: fetchTopology,
-    refetchInterval: 10000,
+function makeGraph(data, showIp) {
+  if (!data) return [];
+  const nodes = data.nodes.map(({ data: node }) => {
+    if (node.is_zone) return { data: node };
+    return { data: { ...node, icon: deviceIcons[node.type] || ICONS[node.type] || ICONS.asset,
+      caption: showIp && node.ip ? node.label + "\n" + node.ip : node.label,
+    }};
   });
-  const { data: zoneStats = [] } = useQuery({
-    queryKey: ["zones"],
-    queryFn: () => api.get("/zones").then((r) => r.data),
-    refetchInterval: 8000,
-  });
-
-  const [selected, setSelected] = useState(null);
-  const [collapsedZones, setCollapsedZones] = useState(() => new Set());
-  const [linkStyle, setLinkStyleState] = useState(loadLinkStyle);
-  const cyRef = useRef(null);
-
-  const setLinkStyle = (v) => {
-    setLinkStyleState(v);
-    saveLinkStyle(v);
-  };
-
-  const zones = data?.zones || [];
-
-  const elements = useMemo(() => {
-    if (!data) return [];
-    const zoneNodes = data.nodes.filter((n) => n.data.is_zone).map((n) => ({
-      data: { ...n.data },
-    }));
-    const deviceNodes = data.nodes.filter((n) => !n.data.is_zone).map((n) => ({
-      data: {
-        ...n.data,
-        bg: TYPE_BASE[n.data.type] || "#94a3b8",
-        border: STATUS_COLOR[n.data.status] || TYPE_BASE[n.data.type] || "#94a3b8",
-        shape: TYPE_SHAPE[n.data.type] || "ellipse",
-      },
-    }));
-    return [...zoneNodes, ...deviceNodes, ...data.edges];
-  }, [data]);
-
-  // Apply collapsed state by hiding device nodes of collapsed zones
-  useEffect(() => {
-    const cy = cyRef.current;
-    if (!cy) return;
-    cy.batch(() => {
-      cy.nodes().forEach((n) => {
-        const z = n.data("zone");
-        const isZoneNode = n.data("is_zone");
-        if (isZoneNode) {
-          // keep zone parent visible always; just collapse its children
-          return;
-        }
-        if (z && collapsedZones.has(z)) {
-          n.style("display", "none");
-          n.connectedEdges().style("display", "none");
-        } else {
-          n.style("display", "element");
-          n.connectedEdges().style("display", "element");
-        }
-      });
-    });
-    // No re-layout here: collapsing only hides nodes, so a dragged layout is kept (#32).
-  }, [collapsedZones, elements]);
-
-  // Re-run the layout only when the node set changes (devices added/removed),
-  // not on every data refresh, selection or link-style toggle (#32). The very
-  // first layout of each Cytoscape instance is done by react-cytoscapejs on
-  // mount via the `layout` prop, so a new instance is only recorded here.
-  const nodeSig = useMemo(() => nodeSignature(elements), [elements]);
-  const layoutRef = useRef({ cy: null, sig: null });
-  useEffect(() => {
-    const cy = cyRef.current;
-    if (!cy || cy.destroyed()) return;
-    const last = layoutRef.current;
-    if (last.cy === cy && last.sig !== nodeSig) {
-      cy.layout(LAYOUT).run();
-    }
-    layoutRef.current = { cy, sig: nodeSig };
-  }, [nodeSig]);
-
-  useEffect(() => {
-    const cy = cyRef.current;
-    if (!cy) return;
-    const handler = (evt) => {
-      const d = evt.target.data();
-      if (d.is_zone) {
-        // toggle collapse on zone tap
-        setCollapsedZones((prev) => {
-          const next = new Set(prev);
-          if (next.has(d.label)) next.delete(d.label);
-          else next.add(d.label);
-          return next;
-        });
-        return;
-      }
-      setSelected(d);
-    };
-    const unselect = () => setSelected(null);
-    cy.on("tap", "node", handler);
-    cy.on("tap", (e) => { if (e.target === cy) unselect(); });
-    return () => { cy.removeListener("tap"); };
-  }, [elements]);
-
-  const toggleZone = (z) => {
-    setCollapsedZones((prev) => {
-      const next = new Set(prev);
-      if (next.has(z)) next.delete(z);
-      else next.add(z);
-      return next;
-    });
-  };
-
-  // Memoized so react-cytoscapejs (shallow diff per stylesheet entry) only
-  // re-applies the style when the link style actually changes (#32).
-  const stylesheet = useMemo(
-    () => [
-      ...BASE_STYLESHEET_HEAD,
-      ...(linkStyle === "taxi" ? TAXI_EDGE_STYLE : []),
-      ...BASE_STYLESHEET_TAIL,
-    ],
-    [linkStyle],
-  );
-
-  return (
-    <div className="p-6 flex flex-col h-screen" data-testid="topology-page">
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <div className="text-[11px] tracking-[0.2em] text-nv-muted uppercase font-mono">{t("topo.networkMap")}</div>
-          <h1 className="text-[22px] font-semibold tracking-tight">{t("topo.title")}</h1>
-        </div>
-        <div className="flex items-center gap-4 text-[11px] font-mono">
-          <div
-            className="flex items-center gap-2"
-            role="group"
-            aria-label={t("topo.linkStyle")}
-            data-testid="topology-link-style"
-          >
-            <span className="text-nv-muted uppercase tracking-wider">{t("topo.linkStyle")}</span>
-            <button
-              type="button"
-              className={`nv-btn ${linkStyle === "bezier" ? "nv-btn-primary" : ""}`}
-              onClick={() => setLinkStyle("bezier")}
-              aria-pressed={linkStyle === "bezier"}
-              data-testid="topology-link-style-bezier"
-            >
-              {t("topo.linkCurved")}
-            </button>
-            <button
-              type="button"
-              className={`nv-btn ${linkStyle === "taxi" ? "nv-btn-primary" : ""}`}
-              onClick={() => setLinkStyle("taxi")}
-              aria-pressed={linkStyle === "taxi"}
-              title={t("topo.linkOrthoHint")}
-              data-testid="topology-link-style-taxi"
-            >
-              {t("topo.linkOrtho")}
-            </button>
-          </div>
-          <Legend />
-        </div>
-      </div>
-
-      <div className="flex-1 flex gap-3 min-h-0">
-        {/* Left: zone controls */}
-        <div className="nv-panel w-[200px] flex-shrink-0" data-testid="topology-zones-panel">
-          <div className="px-3 py-2 border-b border-nv-border flex items-center gap-2">
-            <Boxes size={14} className="text-[#16c79a]" />
-            <span className="nv-section-title">{t("topo.zones")}</span>
-          </div>
-          <div>
-            {zones.map((z) => {
-              const collapsed = collapsedZones.has(z);
-              const stat = zoneStats.find((s) => s.name === z);
-              return (
-                <button
-                  key={z}
-                  type="button"
-                  onClick={() => toggleZone(z)}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-[12px] hover:bg-[#1c2748] border-b border-[#1f2a44] last:border-0 text-left"
-                  data-testid={`topology-zone-toggle-${z}`}
-                >
-                  {collapsed ? <ChevronRight size={12} className="text-nv-muted" /> : <ChevronDown size={12} className="text-[#16c79a]" />}
-                  <span className="font-mono text-nv-text flex-1">{z}</span>
-                  {stat && (
-                    <span className="flex items-center gap-1 font-mono text-[10px]">
-                      <span className="text-[#16c79a]">{stat.online}</span>
-                      <span className="text-nv-muted">/</span>
-                      <span className="text-nv-text">{stat.total}</span>
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-            {zones.length === 0 && (
-              <div className="px-3 py-4 text-[11px] text-nv-muted font-mono text-center">{t("topo.noZones")}</div>
-            )}
-            <div className="px-3 py-2 border-t border-nv-border flex gap-2">
-              <button
-                className="nv-btn flex-1 justify-center"
-                onClick={() => setCollapsedZones(new Set())}
-                data-testid="topology-expand-all"
-              >
-                {t("topo.expandAll")}
-              </button>
-              <button
-                className="nv-btn flex-1 justify-center"
-                onClick={() => setCollapsedZones(new Set(zones))}
-                data-testid="topology-collapse-all"
-              >
-                {t("topo.collapseAll")}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Canvas */}
-        <div className="nv-panel flex-1 relative overflow-hidden" data-testid="topology-canvas">
-          <div className="absolute inset-0 nv-topo">
-            {!isLoading && elements.length > 0 && (
-              <CytoscapeComponent
-                cy={(cy) => { cyRef.current = cy; }}
-                elements={elements}
-                style={{ width: "100%", height: "100%" }}
-                layout={LAYOUT}
-                stylesheet={stylesheet}
-                wheelSensitivity={0.3}
-              />
-            )}
-            {!isLoading && elements.length === 0 && (
-              <div className="h-full flex items-center justify-center text-nv-muted text-[12px] font-mono">{t("topo.noData")}</div>
-            )}
-          </div>
-        </div>
-
-        {selected && (
-          <div className="nv-panel w-[320px] flex-shrink-0" data-testid="topology-side-panel">
-            <div className="px-4 py-3 border-b border-nv-border flex items-center justify-between">
-              <span className="nv-section-title">{t("topo.nodeDetails")}</span>
-              <button onClick={() => setSelected(null)} className="text-nv-muted hover:text-white" data-testid="topology-close-panel">
-                <X size={14} />
-              </button>
-            </div>
-            <div className="p-4 space-y-3">
-              {selected.is_segment ? (
-                <>
-                  <div>
-                    <div className="font-mono text-[14px] text-nv-text">{selected.label}</div>
-                    <div className="text-[11px] uppercase tracking-wider text-nv-muted">{t("topo.unmanagedSegment")}</div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-y-2 text-[12px]">
-                    <div className="nv-label">{t("topo.switchPort")}</div><div className="font-mono text-[#16c79a]">{selected.port}</div>
-                    <div className="nv-label">{t("topo.hosts")}</div><div className="font-mono">{selected.mac_count}</div>
-                  </div>
-                  <div>
-                    <div className="nv-label mb-1">{t("topo.macAddresses")}</div>
-                    <div className="space-y-1 max-h-[220px] overflow-auto">
-                      {(selected.macs || []).map((m) => (
-                        <div key={m} className="font-mono text-[11px] text-nv-text">{m}</div>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              ) : selected.is_asset ? (
-                <>
-                  <div>
-                    <div className="font-mono text-[14px] text-nv-text">{selected.label}</div>
-                    <div className="text-[11px] uppercase tracking-wider text-nv-muted">{t("topo.logicalAsset")}</div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-y-2 text-[12px]">
-                    <div className="nv-label">{t("topo.type")}</div><div className="font-mono text-[#0e7490]">{selected.asset_type}</div>
-                    <div className="nv-label">{t("topo.detail")}</div><div className="font-mono">{selected.detail || "—"}</div>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center gap-3">
-                    <StatusDot status={selected.status} pulse={selected.status !== "online"} />
-                    <div>
-                      <div className="font-mono text-[14px] text-nv-text">{selected.label}</div>
-                      <div className="text-[11px] uppercase tracking-wider text-nv-muted">{selected.type}</div>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-y-2 text-[12px]">
-                    <div className="nv-label">{t("topo.ip")}</div><div className="font-mono text-[#16c79a]">{selected.ip}</div>
-                    <div className="nv-label">{t("topo.zone")}</div><div className="font-mono">{selected.zone || "—"}</div>
-                    <div className="nv-label">{t("topo.vendor")}</div><div className="font-mono">{selected.vendor}</div>
-                    <div className="nv-label">{t("topo.model")}</div><div className="font-mono">{selected.model}</div>
-                    <div className="nv-label">{t("topo.protocol")}</div><div className="font-mono">{selected.protocol}</div>
-                    <div className="nv-label">{t("topo.status")}</div><div className="font-mono uppercase">{selected.status}</div>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  return [...nodes, ...data.edges];
 }
 
-const ZoneStatusDots = () => null;
+function graphStyles(linkStyle) {
+  return [
+    { selector: "node", style: {
+      "background-color": "white", "background-image": "data(icon)", "background-fit": "contain",
+      "background-image-crossorigin": "anonymous", shape: "rectangle", width: 40, height: 32,
+      label: "data(caption)", color: BLACK, "font-family": "Arial, Malgun Gothic, sans-serif",
+      "font-size": 12, "font-weight": 600, "text-valign": "bottom", "text-margin-y": 3,
+      "text-wrap": "wrap", "text-max-width": 165, "text-background-color": "white", "text-background-opacity": 1,
+    }},
+    { selector: "node[?is_zone]", style: {
+      label: "data(label)", "background-image": "none", shape: "round-rectangle",
+      "background-color": "#f7f9fb", "background-opacity": .50, "border-width": 1, "border-color": "#c8cfd5",
+      padding: 22, "text-valign": "top", color: "#546170", "font-size": 11,
+    }},
+    { selector: "node[status='warning']", style: { "border-width": 1.5, "border-color": ORANGE } },
+    { selector: "node[status='critical'], node[status='offline']", style: { "border-width": 1.5, "border-color": RED } },
+    { selector: "edge", style: { width: 1.5, "line-color": BLACK, "curve-style": linkStyle } },
+    { selector: "edge[kind='unmanaged']", style: { "line-style": "dashed" } },
+    { selector: "edge[kind='asset']", style: { "line-style": "dotted" } },
+    { selector: "edge[status='warning']", style: { "line-color": ORANGE } },
+    { selector: "edge[status='down'], edge[status='critical']", style: { "line-color": RED } },
+    { selector: "edge[?label]", style: {
+      label: "data(label)", "font-size": 10, color: "#485361", "text-rotation": "autorotate",
+      "text-background-color": "white", "text-background-opacity": 1, "text-background-padding": 2,
+      "min-zoomed-font-size": 7,
+    }},
+    { selector: "node:selected", style: { "outline-color": BLUE, "outline-width": 2, "outline-offset": 3 } },
+    { selector: "edge:selected", style: { width: 3, "line-color": BLUE } },
+  ];
+}
 
-const Legend = () => (
-  <div className="flex items-center gap-4 text-nv-muted">
-    <span className="flex items-center gap-1.5"><span className="w-3 h-2 bg-[#3b82f6] inline-block" /> SWITCH</span>
-    <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-[#16c79a] inline-block" style={{clipPath:"polygon(25% 0,75% 0,100% 50%,75% 100%,25% 100%,0 50%)"}} /> PLC</span>
-    <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-[#a78bfa] inline-block rotate-45" /> HMI</span>
-    <span className="flex items-center gap-1.5"><span className="w-3 h-3 bg-[#94a3b8] inline-block rounded-full" /> SENSOR</span>
-    <span className="flex items-center gap-1.5"><span className="w-3 h-2 bg-[#475569] inline-block border border-dashed border-[#94a3b8]" /> SEGMENT</span>
-    <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-[#0e7490] inline-block" /> ASSET</span>
-  </div>
-);
+export default function Topology() {
+  const { t, lang } = useI18n();
+  const ko = lang === "ko";
+  const topology = useQuery({ queryKey: ["topology"], queryFn: fetchTopology, refetchInterval: 10000 });
+  const events = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts, refetchInterval: 10000 });
+  const zoneStats = useQuery({ queryKey: ["zones"], queryFn: () => api.get("/zones").then(r => r.data), refetchInterval: 10000 });
+  const data = topology.data;
+  const [params] = useSearchParams();
+  const requestedDevice = params.get("device");
+  const openedDevice = useRef(null);
+  const [selectedId, setSelectedId] = useState(null);
+  const [collapsed, setCollapsed] = useState(() => new Set());
+  const [showIp, setShowIp] = useState(false);
+  const [linkStyle, setStyle] = useState(() => {
+    try { return window.localStorage.getItem(STORAGE_KEY) === "taxi" ? "taxi" : "bezier"; }
+    catch { return "bezier"; }
+  });
+  const canvas = useRef(null);
+  const [cy, setCy] = useState(null);
+  const elements = useMemo(() => makeGraph(data, showIp), [data, showIp]);
+  const styles = useMemo(() => graphStyles(linkStyle), [linkStyle]);
+  const selected = elements.find(el => el.data.id === selectedId)?.data;
+  const labels = useMemo(() => new Map(data?.nodes.map(n => [n.data.id, n.data.label])), [data]);
+  const devices = data?.nodes.filter(n => !n.data.is_zone && !n.data.is_asset && !n.data.is_segment);
+  const recent = useMemo(() => (events.data || []).slice().sort((a,b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)).slice(0, 12), [events.data]);
+
+  function changeStyle(value) {
+    setStyle(value);
+    try { window.localStorage.setItem(STORAGE_KEY, value); } catch { /* Keep current session setting. */ }
+  }
+  function toggleZone(zone) {
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(zone)) next.delete(zone); else next.add(zone);
+      return next;
+    });
+  }
+  useEffect(() => {
+    if (!cy || cy.destroyed()) return;
+    const tap = event => {
+      const el = event.target;
+      if (el === cy) { setSelectedId(null); return; }
+      if (el.data("is_zone")) { toggleZone(el.data("label")); return; }
+      setSelectedId(el.id());
+    };
+    cy.on("tap", tap);
+    const observer = new ResizeObserver(() => { if (!cy.destroyed()) cy.resize(); });
+    observer.observe(canvas.current);
+    return () => { cy.off("tap", tap); observer.disconnect(); };
+  }, [cy]);
+
+  // Place newly discovered devices near an existing neighbour without moving the
+  // operator's manually arranged nodes or changing the current zoom.
+  const previousGraph = useRef(null);
+  useEffect(() => {
+    if (!cy || cy.destroyed()) return;
+    const previous = previousGraph.current;
+    const ids = new Set(cy.nodes().map(n => n.id()));
+    if (previous?.cy === cy) {
+      cy.nodes().filter(n => !n.isParent() && !previous.ids.has(n.id())).forEach((n, index) => {
+        const anchor = n.neighborhood("node").filter(adj => previous.ids.has(adj.id())).first();
+        const center = anchor.length ? anchor.position() : { x: cy.extent().x1 + cy.extent().w / 2, y: cy.extent().y1 + cy.extent().h / 2 };
+        const angle = index * 2.4;
+        n.position({ x: center.x + Math.cos(angle) * 110, y: center.y + Math.sin(angle) * 110 });
+      });
+    }
+    previousGraph.current = { cy, ids };
+    cy.batch(() => {
+      cy.nodes().forEach(n => n.style("display", !n.data("is_zone") && collapsed.has(n.data("zone")) ? "none" : "element"));
+      cy.edges().forEach(e => e.style("display", e.source().visible() && e.target().visible() ? "element" : "none"));
+    });
+  }, [cy, elements, collapsed]);
+
+  useEffect(() => {
+    if (!requestedDevice || !cy || cy.destroyed() || !data || openedDevice.current === requestedDevice) return;
+    const node = cy.getElementById(requestedDevice);
+    if (!node.length) return;
+    cy.elements(":selected").unselect();
+    node.select();
+    cy.center(node);
+    openedDevice.current = requestedDevice;
+    setSelectedId(requestedDevice);
+  }, [requestedDevice, cy, data]);
+
+  function closeSelection() {
+    cy?.elements(":selected").unselect();
+    setSelectedId(null);
+  }
+  function zoom(factor) {
+    if (cy) cy.zoom({ level: cy.zoom() * factor, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+  }
+  function selectDevice(id) {
+    if (!cy || !labels.has(id)) return;
+    const node = cy.getElementById(id);
+    const zone = node.data("zone");
+    if (collapsed.has(zone)) toggleZone(zone);
+    cy.elements(":selected").unselect();
+    node.select();
+    cy.center(node);
+    setSelectedId(id);
+  }
+
+  const zones = data?.zones || [];
+  const fieldRows = selected && (selected.source != null ? [
+    [ko ? "시작 장비" : "Source", labels.get(selected.source)],
+    [ko ? "도착 장비" : "Target", labels.get(selected.target)],
+    [ko ? "연결 유형" : "Connection", selected.kind || (ko ? "장비 계층" : "Device hierarchy")],
+    [ko ? "포트" : "Ports", selected.label],
+    [ko ? "링크 상태" : "Link status", selected.status || (ko ? "미수집" : "Not reported")],
+  ] : selected.is_segment ? [
+    [t("topo.switchPort"), selected.port], [t("topo.hosts"), selected.mac_count], [t("topo.macAddresses"), selected.macs?.join(", ")],
+  ] : selected.is_asset ? [
+    [t("topo.type"), selected.asset_type], [t("topo.detail"), selected.detail],
+  ] : [
+    [t("topo.type"), selected.type], [t("topo.ip"), selected.ip], [t("topo.zone"), selected.zone],
+    [t("topo.vendor"), selected.vendor], [t("topo.model"), selected.model], [t("topo.protocol"), selected.protocol], [t("topo.status"), selected.stale ? (ko ? "수집 지연" : "Telemetry stale") : selected.status],
+  ]);
+  return (
+    <main className="flex min-w-0 flex-col p-4 md:p-6 gap-3 text-slate-900" data-testid="topology-page">
+      <h1 className="text-[24px] font-semibold tracking-tight">{t("topo.title")}</h1>
+      <div className="rounded-md border border-slate-300 bg-white">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-slate-200 px-4 py-3 text-xs">
+          <b>{ko ? "모니터링" : "Monitoring"}</b>
+          <div role="group" aria-label={t("topo.linkStyle")} data-testid="topology-link-style" className="flex items-center gap-1">
+            <span className="mr-1">{t("topo.linkStyle")}</span>
+            {["bezier","taxi"].map(style => <button key={style} type="button" aria-pressed={style === linkStyle} onClick={() => changeStyle(style)}
+              data-testid={"topology-link-style-" + style} className={"rounded border px-2 py-1 " + (style === linkStyle ? "bg-slate-900 text-white" : "border-slate-300 bg-white")}>
+              {t(style === "taxi" ? "topo.linkOrtho" : "topo.linkCurved")}
+            </button>)}
+          </div>
+          <label className="flex items-center gap-2"><input type="checkbox" checked={showIp} onChange={e => setShowIp(e.target.checked)}/>{ko ? "IP 표시" : "Show IP"}</label>
+          <details data-testid="topology-zones-panel" className="relative">
+            <summary className="flex cursor-pointer items-center gap-1">{t("topo.zones")} ({zones.length}) <ChevronDown size={14}/></summary>
+            <div className="absolute z-20 top-full mt-2 w-52 rounded border border-slate-300 bg-white p-2 shadow">
+              {zones.map(zone => <button key={zone} onClick={() => toggleZone(zone)} aria-pressed={!collapsed.has(zone)} data-testid={"topology-zone-toggle-" + zone} className="flex w-full justify-between py-2 text-left">
+                <span>{collapsed.has(zone) ? "+" : "−"} {zone}</span><span>{zoneStats.data?.find(s => s.name === zone)?.total ?? "—"}</span>
+              </button>)}
+              {!zones.length && <p className="mb-2">{t("topo.noZones")}</p>}
+              <div className="flex gap-2"><button className="nv-btn" data-testid="topology-expand-all" onClick={() => setCollapsed(new Set())}>{t("topo.expandAll")}</button>
+              <button className="nv-btn" data-testid="topology-collapse-all" onClick={() => setCollapsed(new Set(zones))}>{t("topo.collapseAll")}</button></div>
+            </div>
+          </details>
+        </div>
+        <div className="grid min-w-0 lg:grid-cols-[minmax(0,1fr)_minmax(230px,26%)]">
+          <div ref={canvas} data-testid="topology-canvas" className="relative min-w-0 bg-white" style={{ height: "clamp(410px, 70vh, 900px)" }}>
+            {data?.nodes.length > 0 && <CytoscapeComponent cy={setCy} elements={elements} stylesheet={styles} layout={LAYOUT} style={{height:"100%",width:"100%"}} wheelSensitivity={0.3}/>}
+            {(!data?.nodes.length || topology.isError) && <div role="status" className="absolute left-4 top-4 rounded bg-white p-2 text-sm text-slate-600">
+              {topology.isError ? (ko ? "토폴로지를 갱신할 수 없습니다." : "Topology update failed.") : topology.isLoading ? (ko ? "조회 중…" : "Loading…") : t("topo.noData")}
+              {topology.isError && <button className="ml-3 underline" onClick={() => topology.refetch()}>{ko ? "다시 시도" : "Retry"}</button>}
+            </div>}
+          </div>
+          <aside className="overflow-auto border-t border-slate-200 lg:border-t-0 lg:border-l" style={{maxHeight:"clamp(410px, 70vh, 900px)"}}>
+            {selected && <section className="border-b border-slate-300 p-4" data-testid="topology-side-panel">
+              <div className="flex justify-between gap-2"><h2 className="font-semibold">{selected.source != null ? (ko ? "연결 상세" : "Link details") : t("topo.nodeDetails")}</h2>
+              <button type="button" onClick={closeSelection} aria-label={ko ? "닫기" : "Close"} data-testid="topology-close-panel"><X size={16}/></button></div>
+              {selected.source == null && <div className="mt-3 font-semibold break-all"><DeviceIcon type={selected.type}/>{selected.label}</div>}
+              {selected.source == null && !selected.is_asset && !selected.is_segment && <Link className="mt-2 inline-block text-xs text-blue-700 underline" to={"/devices?device=" + encodeURIComponent(selected.id)}>{ko ? "장비 목록에서 보기" : "View in inventory"}</Link>}
+              <dl className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
+                {fieldRows.map(([name,value]) => <React.Fragment key={name}><dt className="text-slate-600">{name}</dt><dd className="break-words">{value ?? "—"}</dd></React.Fragment>)}
+              </dl>
+            </section>}
+            <section><h2 className="border-b border-slate-200 p-4 font-semibold">{ko ? "최근 이벤트" : "Recent events"}</h2>
+              {events.isError && <p role="alert" className="px-4 py-3 text-sm">{ko ? "이벤트 갱신 실패" : "Event update failed"}</p>}
+              {events.isLoading && <p className="p-4 text-sm">{ko ? "조회 중…" : "Loading…"}</p>}
+              {!events.isLoading && !events.isError && !recent.length && <p className="p-4 text-sm text-slate-600">{ko ? "최근 이벤트가 없습니다." : "No recent events."}</p>}
+              {recent.map(event => <button key={event.id} disabled={!labels.has(event.device_id)} onClick={() => selectDevice(event.device_id)}
+                className="block w-full border-b border-slate-200 px-4 py-3 text-left enabled:hover:bg-slate-50">
+                <div className="flex items-start justify-between gap-2 text-xs"><strong className="break-all">{event.device_name}</strong>
+                <time title={event.timestamp} className="text-slate-500">{new Date(event.timestamp).toLocaleTimeString(ko ? "ko-KR" : "en-GB",{hour:"2-digit", minute:"2-digit", hour12:false})}</time></div>
+                <div className="mt-1 border-l-2 pl-2 text-xs break-words" style={{borderColor:event.state === "resolved" ? BLACK : COLOR[event.severity] || BLACK}}>{event.message}</div>
+              </button>)}
+            </section>
+          </aside>
+        </div>
+        <footer className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-slate-200 px-4 py-2 text-xs">
+          <span>{ko ? "장비" : "Devices"} <b>{devices?.length ?? "—"}</b></span><span>{ko ? "연결" : "Links"} <b>{data?.edges.length ?? "—"}</b></span>
+          {[[BLACK,ko?"기본 연결":"Connection"],[ORANGE,ko?"주의":"Warning"],[RED,ko?"단절 / 심각":"Down / critical"],[BLUE,ko?"선택":"Selected"]].map(([color,name]) =>
+            <span key={color} className="inline-flex items-center gap-1.5"><i style={{background:color,width:17,height:2}}/>{name}</span>)}
+          <div className="ml-auto flex gap-2">
+            <button className="nv-btn" aria-label={ko?"축소":"Zoom out"} onClick={() => zoom(0.8)}><Minus size={15}/></button>
+            <button className="nv-btn" aria-label={ko?"확대":"Zoom in"} onClick={() => zoom(1.25)}><Plus size={15}/></button>
+            <button className="nv-btn" aria-label={ko?"화면 맞춤":"Fit to screen"} onClick={() => cy?.fit(cy.elements(":visible"), 42)}><Crosshair size={15}/></button>
+          </div>
+        </footer>
+      </div>
+    </main>
+  );
+}

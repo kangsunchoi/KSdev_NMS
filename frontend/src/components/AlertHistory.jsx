@@ -3,10 +3,12 @@ import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { fetchAlertHistory } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 
+import { DeviceIcon } from "./DeviceIcon";
+
 const PERIODS = [24, 24 * 7, 24 * 30];
 
 /** Paged alert history over the retention period (issue #24). */
-export function AlertHistory({ deviceName }) {
+export function AlertHistory({ devicesById }) {
   const { t } = useI18n();
   const [state, setState] = useState("");
   const [hours, setHours] = useState(24 * 7);
@@ -58,7 +60,7 @@ export function AlertHistory({ deviceName }) {
               <tr key={a.id}>
                 <td className="font-mono text-[11px] text-nv-muted">{new Date(a.timestamp).toLocaleString()}</td>
                 <td><span className={`nv-sev nv-sev-${a.severity}`}>{a.severity}</span></td>
-                <td>{deviceName[a.device_id] || a.device_name}</td>
+                <td><DeviceIcon type={devicesById[a.device_id]?.device_type}/>{devicesById[a.device_id]?.name || a.device_name}</td>
                 <td>{a.message}</td>
                 <td className="font-mono text-[11px] uppercase">{stateLabel(a)}</td>
                 <td className="font-mono text-[11px] text-nv-muted">

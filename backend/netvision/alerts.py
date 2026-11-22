@@ -15,14 +15,14 @@ ALERT_DEBOUNCE_SEC = 60
 async def _create_alert(device: dict, severity: AlertSeverity, message: str, force: bool = False):
     """Insert alert unless a same-device-same-severity alert exists in the last ALERT_DEBOUNCE_SEC."""
     if device["id"] == "collector":  # COLLECTOR_ALERT_ID: keep a single open alert
-        if await db.alerts.find_one({"device_id": "collector", "acknowledged": False}, {"_id": 0, "id": 1}):
+        if await db.alerts.find_one({"device_id": "collector", "state": {"$ne": "resolved"}}, {"_id": 0, "id": 1}):
             return None
     if not force:
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=ALERT_DEBOUNCE_SEC)).isoformat()
         recent = await db.alerts.find_one(
             # only an OPEN alert suppresses a new one: after offline->online->offline the
             # first alert is already resolved and the new outage must be visible (#36)
-            {"device_id": device["id"], "severity": severity, "acknowledged": False,
+            {"device_id": device["id"], "severity": severity, "state": {"$ne": "resolved"},
              "timestamp": {"$gte": cutoff}},
             {"_id": 0, "id": 1},
         )
@@ -74,11 +74,11 @@ async def _resolve_device_alerts(device_id: str) -> int:
 async def _recent_alerts(limit: int = 200) -> List[dict]:
     """Live view: open alerts (up to OPEN_ALERTS_CAP, newest first) plus the most
     recent closed ones up to `limit` rows in total (issue #24)."""
-    open_docs = await (db.alerts.find({"acknowledged": False}, {"_id": 0}).sort("timestamp", -1)
+    open_docs = await (db.alerts.find({"state": {"$ne": "resolved"}}, {"_id": 0}).sort("timestamp", -1)
                        .limit(config.OPEN_ALERTS_CAP).to_list(config.OPEN_ALERTS_CAP))
     room = max(0, limit - len(open_docs))
     closed = []
     if room:
-        closed = await (db.alerts.find({"acknowledged": True}, {"_id": 0}).sort("timestamp", -1)
+        closed = await (db.alerts.find({"state": "resolved"}, {"_id": 0}).sort("timestamp", -1)
                         .limit(room).to_list(room))
     return sorted(open_docs + closed, key=lambda a: a.get("timestamp", ""), reverse=True)

@@ -160,7 +160,7 @@ async def _simulate_tick():
     now_iso = datetime.now(timezone.utc).isoformat()
     for d in devices:
         # jiggle metrics
-        latency = max(0.1, d.get("latency_ms", 1.0) + random.uniform(-1.5, 1.8))
+        latency = max(0.1, (d["latency_ms"] if d.get("latency_ms") is not None else 1.0) + random.uniform(-1.5, 1.8))
         ploss = max(0.0, min(100.0, d.get("packet_loss", 0.0) + random.uniform(-0.4, 0.6)))
         cpu = max(0.0, min(100.0, d.get("cpu_pct", 30.0) + random.uniform(-3.0, 4.0)))
 

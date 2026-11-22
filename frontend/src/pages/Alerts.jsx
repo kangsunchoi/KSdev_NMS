@@ -9,6 +9,9 @@ import { Check, Trash2, Download, CheckCheck, Search, Link2 } from "lucide-react
 import { toast } from "sonner";
 import { AlertHistory } from "../components/AlertHistory";
 
+import { Link } from "react-router-dom";
+import { DeviceIcon } from "../components/DeviceIcon";
+
 const SEV_ORDER = { critical: 0, warning: 1, info: 2 };
 
 export default function Alerts() {
@@ -23,9 +26,9 @@ export default function Alerts() {
     queryKey: ["devices"],
     queryFn: fetchDevices,
   });
-  const deviceName = useMemo(() => {
+  const devicesById = useMemo(() => {
     const m = {};
-    devices.forEach((d) => { m[d.id] = d.name; });
+    devices.forEach((d) => { m[d.id] = d; });
     return m;
   }, [devices]);
   const [view, setView] = useState("live"); // live | history (issue #24)
@@ -124,11 +127,11 @@ export default function Alerts() {
   };
 
   return (
-    <div className="p-6" data-testid="alerts-page">
-      <div className="flex items-center justify-between mb-5">
+    <div className="nv-page" data-testid="alerts-page">
+      <div className="nv-page-header">
         <div>
           <div className="text-[11px] tracking-[0.2em] text-nv-muted uppercase font-mono">{t("al.eventLog")}</div>
-          <h1 className="text-[22px] font-semibold tracking-tight">{t("nav.alerts")}</h1>
+          <h1 className="nv-page-title">{t("nav.alerts")}</h1>
         </div>
         <div className={`flex gap-2 ${view === "history" ? "invisible" : ""}`} aria-hidden={view === "history"}>
           <button
@@ -152,7 +155,7 @@ export default function Alerts() {
         </div>
       </div>
 
-      <div className="flex gap-2 mb-3" role="tablist">
+      <div className="nv-view-tabs" role="tablist">
         {["live", "history"].map((v) => (
           <button key={v} role="tab" aria-selected={view === v}
             className={`nv-btn ${view === v ? "nv-btn-primary" : ""}`}
@@ -162,15 +165,15 @@ export default function Alerts() {
         ))}
       </div>
 
-      {view === "history" ? <AlertHistory deviceName={deviceName} /> : (<>
+      {view === "history" ? <AlertHistory devicesById={devicesById} /> : (<>
       {summary?.alerts_truncated && (
-        <div className="mb-3 px-3 py-2 border border-[#f4d03f] text-[#f4d03f] text-[12px] font-mono"
+        <div className="mb-3 px-3 py-2 border border-[#875100] text-[#875100] text-[12px] font-mono"
           data-testid="alerts-truncated">
           {t("al.truncated")}
         </div>
       )}
 
-      <div className="flex gap-2 mb-3 items-center flex-wrap">
+      <div className="nv-filter-toolbar">
         {["all", "open", "acknowledged", "resolved"].map((f) => (
           <button
             key={f}
@@ -193,7 +196,7 @@ export default function Alerts() {
         </div>
       </div>
 
-      <div className="nv-panel overflow-hidden">
+      <div className="nv-panel overflow-x-auto">
         <table className="nv-table" data-testid="alerts-table">
           <thead>
             <tr>
@@ -203,7 +206,7 @@ export default function Alerts() {
                   checked={allOpenSelected}
                   onChange={toggleAllVisible}
                   disabled={visibleOpen.length === 0}
-                  className="accent-[#16c79a]"
+                  className="accent-[#09654b]"
                   data-testid="alerts-select-all"
                 />
               </th>
@@ -224,7 +227,7 @@ export default function Alerts() {
                     checked={selected.has(a.id)}
                     onChange={() => toggle(a.id)}
                     disabled={a.acknowledged}
-                    className="accent-[#16c79a]"
+                    className="accent-[#09654b]"
                     data-testid={`alert-checkbox-${a.id}`}
                   />
                 </td>
@@ -234,22 +237,22 @@ export default function Alerts() {
                       className="inline-block w-1 h-4"
                       style={{
                         background:
-                          a.severity === "critical" ? "#e74c3c" :
-                          a.severity === "warning" ? "#f4d03f" : "#16c79a",
+                          a.severity === "critical" ? "#ae2832" :
+                          a.severity === "warning" ? "#875100" : "#09654b",
                       }}
                     />
                     <span className={`nv-sev nv-sev-${a.severity}`}>{a.severity}</span>
                   </div>
                 </td>
-                <td className="font-mono text-nv-text">{a.device_name}</td>
+                <td className="font-mono text-nv-text">{devicesById[a.device_id] ? <Link className="hover:underline" to={"/topology?device=" + encodeURIComponent(a.device_id)}><DeviceIcon type={devicesById[a.device_id].device_type}/>{a.device_name}</Link> : a.device_name}</td>
                 <td className="text-[12px] text-nv-text">
                   {a.message}
                   {a.correlated_to && (
                     <span
-                      className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm text-[10px] font-mono text-[#94a3b8] border border-[#3a4a63] align-middle"
-                      title={`${t("al.correlatedTo")}: ${deviceName[a.correlated_to] || a.correlated_to}`}
+                      className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm text-[10px] font-mono text-[#53606b] border border-[#c3cbd1] align-middle"
+                      title={`${t("al.correlatedTo")}: ${devicesById[a.correlated_to]?.name || a.correlated_to}`}
                     >
-                      <Link2 size={10} /> {deviceName[a.correlated_to] || "upstream"}
+                      <Link2 size={10} /> {devicesById[a.correlated_to]?.name || "upstream"}
                     </span>
                   )}
                 </td>
@@ -258,7 +261,7 @@ export default function Alerts() {
                 </td>
                 <td>
                   <span
-                    className={`font-mono text-[11px] uppercase ${a.state === "resolved" ? "text-nv-muted" : a.acknowledged ? "text-[#16c79a]" : "text-[#f4d03f]"}`}
+                    className={`font-mono text-[11px] uppercase ${a.state === "resolved" ? "text-nv-muted" : a.acknowledged ? "text-[#09654b]" : "text-[#875100]"}`}
                     title={a.resolved_at ? new Date(a.resolved_at).toLocaleString() : a.acknowledged_at ? new Date(a.acknowledged_at).toLocaleString() : undefined}
                   >
                     {a.state === "resolved" ? t("al.stateResolved") : a.acknowledged ? t("al.stateAck") : t("al.stateOpen")}
@@ -276,7 +279,7 @@ export default function Alerts() {
                       <Check size={12} /> ACK
                     </button>
                     <button
-                      className="text-nv-muted hover:text-[#e74c3c] px-1"
+                      className="text-nv-muted hover:text-[#ae2832] px-1"
                       onClick={() => mDel.mutate(a.id)}
                       data-testid={`alert-delete-${a.id}`}
                       title={t("common.delete")}

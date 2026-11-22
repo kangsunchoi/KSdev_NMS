@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "";
 export const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({ baseURL: API });
@@ -71,4 +71,7 @@ export const resetAll = () => api.post("/mock/reset").then((r) => r.data);
 
 // Discovery: subnet-sweep settings (collector reads these and registers found devices).
 export const fetchDiscovery = () => api.get("/discovery").then((r) => r.data);
+export const fetchDiscoveryCandidates = () => api.get("/discovery/candidates").then((r) => r.data);
+export const approveDiscoveryCandidate = (id) =>
+  api.post(`/discovery/candidates/${id}/approve`).then((r) => r.data);
 export const updateDiscovery = (patch) => api.put("/discovery", patch).then((r) => r.data);

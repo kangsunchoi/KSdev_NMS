@@ -17,6 +17,13 @@ def _normalize_ip(value: str) -> str:
     return str(ipaddress.ip_address(value.strip()))
 
 
+def _valid_ipv4(value: str) -> bool:
+    try:
+        return not ipaddress.IPv4Address((value or "").strip()).is_unspecified
+    except ValueError:
+        return False
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 

@@ -22,7 +22,7 @@ const fmtSpeed = (m) => {
 const OperBadge = ({ oper }) => {
   const up = oper === 1;
   const down = oper === 2;
-  const color = up ? "#16c79a" : down ? "#e74c3c" : "#64748b";
+  const color = up ? "#09654b" : down ? "#ae2832" : "#64748b";
   const label = up ? "up" : down ? "down" : "—";
   return (
     <span className="inline-flex items-center gap-1.5 font-mono text-[11px]">
@@ -60,7 +60,7 @@ export const InterfaceModal = ({ device, onClose }) => {
               {device.name} <span className="text-nv-muted">/ {device.ip}</span>
             </div>
           </div>
-          <button onClick={onClose} className="text-nv-muted hover:text-white" data-testid="interface-close">
+          <button onClick={onClose} className="text-nv-muted hover:text-nv-text" data-testid="interface-close">
             <X size={16} />
           </button>
         </div>
@@ -94,8 +94,8 @@ export const InterfaceModal = ({ device, onClose }) => {
                     <td className="px-3 py-1.5 font-mono">{r.name || r.ifindex}</td>
                     <td className="px-3 py-1.5"><OperBadge oper={r.oper} /></td>
                     <td className="px-3 py-1.5 text-right font-mono text-nv-muted">{fmtSpeed(r.speed_mbps)}</td>
-                    <td className="px-3 py-1.5 text-right font-mono text-[#16c79a]">{fmtBps(r.in_bps)}</td>
-                    <td className="px-3 py-1.5 text-right font-mono text-[#60a5fa]">{fmtBps(r.out_bps)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-[#09654b]">{fmtBps(r.in_bps)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-[#23518a]">{fmtBps(r.out_bps)}</td>
                     <td className="px-3 py-1.5 text-right font-mono text-nv-muted">
                       {(r.in_errors ?? 0)}/{(r.out_errors ?? 0)}
                     </td>

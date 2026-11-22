@@ -9,6 +9,9 @@ import { Check, Trash2, Download, CheckCheck, Search, Link2 } from "lucide-react
 import { toast } from "sonner";
 import { AlertHistory } from "../components/AlertHistory";
 
+import { Link } from "react-router-dom";
+import { DeviceIcon } from "../components/DeviceIcon";
+
 const SEV_ORDER = { critical: 0, warning: 1, info: 2 };
 
 export default function Alerts() {
@@ -23,9 +26,9 @@ export default function Alerts() {
     queryKey: ["devices"],
     queryFn: fetchDevices,
   });
-  const deviceName = useMemo(() => {
+  const devicesById = useMemo(() => {
     const m = {};
-    devices.forEach((d) => { m[d.id] = d.name; });
+    devices.forEach((d) => { m[d.id] = d; });
     return m;
   }, [devices]);
   const [view, setView] = useState("live"); // live | history (issue #24)
@@ -162,7 +165,7 @@ export default function Alerts() {
         ))}
       </div>
 
-      {view === "history" ? <AlertHistory deviceName={deviceName} /> : (<>
+      {view === "history" ? <AlertHistory devicesById={devicesById} /> : (<>
       {summary?.alerts_truncated && (
         <div className="mb-3 px-3 py-2 border border-[#875100] text-[#875100] text-[12px] font-mono"
           data-testid="alerts-truncated">
@@ -241,15 +244,15 @@ export default function Alerts() {
                     <span className={`nv-sev nv-sev-${a.severity}`}>{a.severity}</span>
                   </div>
                 </td>
-                <td className="font-mono text-nv-text">{a.device_name}</td>
+                <td className="font-mono text-nv-text">{devicesById[a.device_id] ? <Link className="hover:underline" to={"/topology?device=" + encodeURIComponent(a.device_id)}><DeviceIcon type={devicesById[a.device_id].device_type}/>{a.device_name}</Link> : a.device_name}</td>
                 <td className="text-[12px] text-nv-text">
                   {a.message}
                   {a.correlated_to && (
                     <span
                       className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm text-[10px] font-mono text-[#53606b] border border-[#c3cbd1] align-middle"
-                      title={`${t("al.correlatedTo")}: ${deviceName[a.correlated_to] || a.correlated_to}`}
+                      title={`${t("al.correlatedTo")}: ${devicesById[a.correlated_to]?.name || a.correlated_to}`}
                     >
-                      <Link2 size={10} /> {deviceName[a.correlated_to] || "upstream"}
+                      <Link2 size={10} /> {devicesById[a.correlated_to]?.name || "upstream"}
                     </span>
                   )}
                 </td>

@@ -26,14 +26,9 @@ async def metrics_loop():
             await _stale_sweep()
             await notify.flush_suppressed()
 
-            # purge closed (acknowledged/resolved) alerts older than the retention period
-            # (counted from when the alert was CLOSED, not created)
+            # Active incidents survive retention until recovery, including acknowledged ones.
             cutoff = (datetime.now(timezone.utc) - timedelta(days=config.ALERT_RETENTION_DAYS)).isoformat()
-            await db.alerts.delete_many({"acknowledged": True, "$or": [
-                {"resolved_at": {"$lt": cutoff}},
-                {"resolved_at": None, "acknowledged_at": {"$lt": cutoff}},
-                {"resolved_at": None, "acknowledged_at": None, "timestamp": {"$lt": cutoff}},
-            ]})
+            await db.alerts.delete_many({"state": "resolved", "resolved_at": {"$lt": cutoff}})
 
             # Broadcast snapshot to WS clients
             if ws.ws_manager.clients:

@@ -29,7 +29,8 @@ export default function Dashboard() {
   const alerts = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts });
   const devices = useQuery({ queryKey: ["devices"], queryFn: fetchDevices });
 
-  const s = summary.data || { total: 0, online: 0, critical: 0, open_alerts: 0, health_score: 0, avg_latency_ms: 0, avg_packet_loss: 0, warning: 0 };
+  const s = summary.data || { total: 0, online: 0, critical: 0, open_alerts: 0, health_score: 0, avg_packet_loss: 0, warning: 0 };
+  const latency = s.avg_latency_ms == null ? t("dash.notMeasured") : `${s.avg_latency_ms} ms`;
   const recentAlerts = (alerts.data || []).slice(0, 8);
   const recentDevices = (devices.data || []).slice(0, 6);
 
@@ -60,8 +61,8 @@ export default function Dashboard() {
       <div className="nv-kpi-grid">
         <KpiTile label={t("dash.totalDevices")} value={s.total} icon={Server} testId="kpi-total-devices" sub={`${s.online} online · ${s.warning} warn`} />
         <KpiTile label={t("dash.online")} value={s.online} suffix={`/ ${s.total}`} icon={Activity} testId="kpi-online" accent="#09654b" sub={s.total ? `${Math.round((s.online / s.total) * 100)}% reachable` : "—"} />
-        <KpiTile label={t("dash.criticalAlerts")} value={s.critical_alerts ?? 0} icon={AlertOctagon} accent="#ae2832" testId="kpi-critical-alerts" sub={`${s.open_alerts ?? 0} open total`} />
-        <KpiTile label={t("dash.healthScore")} value={s.health_score} suffix="/ 100" icon={Gauge} accent="#09654b" testId="kpi-health-score" sub={`avg latency ${s.avg_latency_ms}ms`} />
+        <KpiTile label={t("dash.criticalAlerts")} value={s.critical_alerts ?? 0} icon={AlertOctagon} accent="#ae2832" testId="kpi-critical-alerts" sub={`${t("dash.openAlerts")} ${s.open_alerts ?? 0}`} />
+        <KpiTile label={t("dash.healthScore")} value={s.health_score} suffix="/ 100" icon={Gauge} accent="#09654b" testId="kpi-health-score" sub={`${t("dash.latency")} ${latency}`} />
       </div>
 
       {/* Health bar */}
@@ -81,7 +82,7 @@ export default function Dashboard() {
           />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3 text-[11px] font-mono">
-          <div><span className="text-nv-muted uppercase">{t("dash.latency")}:</span> <span className="text-nv-text">{s.avg_latency_ms}ms</span></div>
+          <div><span className="text-nv-muted uppercase">{t("dash.latency")}:</span> <span className="text-nv-text">{latency}</span>{s.latency_sample_count != null && ` (${t("dash.samples")} ${s.latency_sample_count})`}</div>
           <div><span className="text-nv-muted uppercase">{t("dash.packetLoss")}:</span> <span className="text-nv-text">{s.avg_packet_loss}%</span></div>
           <div><span className="text-nv-muted uppercase">{t("dash.openAlerts")}:</span> <span className="text-[#ae2832]">{s.open_alerts}</span></div>
         </div>
@@ -122,7 +123,7 @@ export default function Dashboard() {
               <div key={d.id} className="px-4 py-2 flex items-center gap-3 border-b border-[#e0e4e7] last:border-0">
                 <StatusDot status={d.status} pulse={d.status !== "online"} />
                 <span className="font-mono text-[12px] text-nv-text flex-1">{d.name}</span>
-                <span className="font-mono text-[11px] text-nv-muted">{d.latency_ms}ms</span>
+                <span className="font-mono text-[11px] text-nv-muted">{d.latency_ms == null ? t("dash.notMeasured") : `${d.latency_ms} ms`}</span>
                 <Cpu size={12} className="text-nv-muted" />
                 <span className="font-mono text-[11px] text-nv-text">{d.cpu_pct}%</span>
               </div>

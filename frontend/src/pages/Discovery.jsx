@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { fetchDiscovery, updateDiscovery } from "../lib/api";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchDiscovery, updateDiscovery, fetchDiscoveryCandidates, approveDiscoveryCandidate } from "../lib/api";
+import { hasRole } from "../lib/auth";
 import { useI18n } from "../lib/i18n";
 import { Radar, Save, Search } from "lucide-react";
 import { toast } from "sonner";
@@ -10,6 +11,28 @@ const INPUT = "nv-input w-full px-3 py-2 text-[13px] rounded-sm";
 
 export default function Discovery() {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const candidates = useQuery({
+    queryKey: ["discovery-candidates"],
+    queryFn: fetchDiscoveryCandidates,
+    refetchInterval: 5000,
+  });
+  const [approving, setApproving] = useState(null);
+  const approve = async (id) => {
+    setApproving(id);
+    try {
+      await approveDiscoveryCandidate(id);
+      await Promise.all([
+        candidates.refetch(),
+        queryClient.invalidateQueries({ queryKey: ["devices"] }),
+      ]);
+      toast.success(t("disc.approved"));
+    } catch {
+      toast.error(t("disc.approveFail"));
+    } finally {
+      setApproving(null);
+    }
+  };
   const { data, refetch } = useQuery({
     queryKey: ["discovery"],
     queryFn: fetchDiscovery,
@@ -155,7 +178,7 @@ export default function Discovery() {
             </div>
             <div className="flex justify-between">
               <dt className="text-nv-muted">{t("disc.created")}</dt>
-              <dd className="text-nv-text">{data?.last_created ?? 0}</dd>
+              <dd className="text-nv-text">{data?.last_queued ?? 0}</dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-nv-muted">{t("disc.message")}</dt>
@@ -167,6 +190,23 @@ export default function Discovery() {
           </p>
         </div>
       </div>
+      <section className="nv-panel p-4 mt-4">
+        <h2 className="nv-section-title mb-3">{t("disc.candidates")}</h2>
+        {candidates.isError ? <p role="alert">{t("disc.loadFail")}</p> :
+          candidates.isLoading ? <p>{t("disc.loading")}</p> :
+          !candidates.data?.length ? <p>{t("disc.empty")}</p> :
+          <ul>
+            {candidates.data.map((row) => (
+              <li key={row.id} className="flex flex-wrap items-center gap-4 border-t py-2">
+                <span>{t("disc.site")} {row.site_id}</span>
+                <strong className="font-mono">{row.ip}</strong>
+                <time dateTime={row.observed_at}>{fmt(row.observed_at)}</time>
+                {hasRole("operator") && <button className="nv-btn ml-auto" disabled={approving !== null}
+                  onClick={() => approve(row.id)}>{t("disc.approve")}</button>}
+              </li>
+            ))}
+          </ul>}
+      </section>
     </div>
   );
 }

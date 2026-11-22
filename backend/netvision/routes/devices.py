@@ -1,13 +1,14 @@
 """Device CRUD, selective cleanup and per-device metric history."""
 from datetime import datetime, timezone, timedelta
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
+from pymongo.errors import DuplicateKeyError
 
 from netvision.database import db
-from netvision.devices import _cascade_delete_devices, _ip_taken
-from netvision.helpers import _is_placeholder, _normalize_ip, _valid_ip
-from netvision.models import CleanupPayload, Device, DeviceCreate, DeviceUpdate
+from netvision.devices import _cascade_delete_devices, _ip_taken, site_query
+from netvision.helpers import _normalize_ip, _valid_ipv4
+from netvision.models import CleanupPayload, Device, DeviceCreate, DeviceUpdate, SiteId
 
 router = APIRouter()
 
@@ -19,17 +20,20 @@ async def root():
 
 # Devices CRUD
 @router.get("/devices", response_model=List[Device])
-async def list_devices():
-    docs = await db.devices.find({}, {"_id": 0}).to_list(None)
+async def list_devices(site_id: Optional[SiteId] = None):
+    docs = await db.devices.find(site_query(site_id) if site_id else {}, {"_id": 0}).to_list(None)
     return docs
 
 
 @router.post("/devices", response_model=Device)
 async def create_device(payload: DeviceCreate):
-    if await _ip_taken(payload.ip):
+    if await _ip_taken(payload.ip, site_id=payload.site_id):
         raise HTTPException(409, f"A device with IP {payload.ip} already exists")
     dev = Device(**payload.model_dump())
-    await db.devices.insert_one(dev.model_dump())
+    try:
+        await db.devices.insert_one({**dev.model_dump(), "managed_address": f"{dev.site_id}/{dev.ip}"})
+    except DuplicateKeyError:
+        raise HTTPException(409, "Address already registered at this site") from None
     return dev
 
 
@@ -50,7 +54,7 @@ async def update_device(device_id: str, payload: DeviceUpdate):
         update["name"] = update["name"].strip()
         if not update["name"]:
             raise HTTPException(422, "name must not be empty")
-    current = await db.devices.find_one({"id": device_id}, {"_id": 0, "ip": 1})
+    current = await db.devices.find_one({"id": device_id}, {"_id": 0, "ip": 1, "site_id": 1})
     if not current:
         raise HTTPException(404, "Device not found")
     if "ip" in update:
@@ -60,17 +64,20 @@ async def update_device(device_id: str, payload: DeviceUpdate):
             # stored IP is invalid or duplicated (data from before validation existed)
             update.pop("ip")
         else:
-            if not _valid_ip(new_ip):
-                raise HTTPException(422, "ip must be a valid IPv4/IPv6 address")
-            if _is_placeholder(new_ip):
-                raise HTTPException(422, "0.0.0.0 / :: is reserved for auto-created devices")
+            if not _valid_ipv4(new_ip):
+                raise HTTPException(422, "ip must identify an IPv4 device")
             new_ip = _normalize_ip(new_ip)
-            if await _ip_taken(new_ip, exclude_id=device_id):
+            site_id = current.get("site_id", "default")
+            if await _ip_taken(new_ip, exclude_id=device_id, site_id=site_id):
                 raise HTTPException(409, f"A device with IP {new_ip} already exists")
             update["ip"] = new_ip
+            update["managed_address"] = f"{site_id}/{new_ip}"
     if not update:  # only the unchanged ip was sent
         return await db.devices.find_one({"id": device_id}, {"_id": 0})
-    result = await db.devices.update_one({"id": device_id}, {"$set": update})
+    try:
+        result = await db.devices.update_one({"id": device_id}, {"$set": update})
+    except DuplicateKeyError:
+        raise HTTPException(409, "Address already registered at this site") from None
     if result.matched_count == 0:
         raise HTTPException(404, "Device not found")
     doc = await db.devices.find_one({"id": device_id}, {"_id": 0})

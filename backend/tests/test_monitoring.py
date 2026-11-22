@@ -180,6 +180,57 @@ def test_acknowledge_sets_state(live):
     assert requests.post(f"{API}/alerts/nope/acknowledge").status_code == 404
 
 
+def test_active_critical_remains_after_ack_until_recovery(live):
+    device = _new_device()
+    # Resolve any outstanding collector alert before taking the baseline.
+    _ingest({"device_id": device["id"], "reachable": True, "latency_ms": 10})
+    baseline = requests.get(f"{API}/dashboard/summary").json()
+    _ingest({"device_id": device["id"], "reachable": False})
+    alert = _alerts(device["id"])[0]
+    before = requests.get(f"{API}/dashboard/summary").json()
+    assert before["critical_alerts"] == baseline["critical_alerts"] + 1
+    ack = requests.post(f"{API}/alerts/{alert['id']}/acknowledge").json()
+    after = requests.get(f"{API}/dashboard/summary").json()
+    assert after["critical_alerts"] == before["critical_alerts"]
+    assert after["health_score"] == before["health_score"]
+    assert after["open_alerts"] == before["open_alerts"] - 1
+    _ingest({"device_id": device["id"], "reachable": True, "latency_ms": 10})
+    recovered = requests.get(f"{API}/dashboard/summary").json()
+    assert recovered["critical_alerts"] == baseline["critical_alerts"]
+    history = requests.get(f"{API}/alerts/history", params={"device_id": device["id"]}).json()
+    assert history["items"][0]["state"] == "resolved"
+    assert history["items"][0]["acknowledged_at"] == ack["acknowledged_at"]
+
+
+def test_latency_sample_count_and_unmeasured_history(live):
+    device = _new_device()
+    assert device["latency_ms"] is None
+    baseline = requests.get(f"{API}/dashboard/summary").json()["latency_sample_count"]
+    _ingest({"device_id": device["id"], "cpu_pct": 30})
+    assert _get(device["id"])["latency_ms"] is None
+    assert requests.get(f"{API}/dashboard/summary").json()["latency_sample_count"] == baseline
+    _ingest({"device_id": device["id"], "latency_ms": 0})
+    assert _get(device["id"])["latency_ms"] == 0
+    _ingest({"device_id": device["id"], "cpu_pct": 20})
+    points = requests.get(f"{API}/devices/{device['id']}/metrics").json()["points"]
+    assert [p["latency_ms"] for p in points] == [None, 0, None]
+    assert requests.get(f"{API}/dashboard/summary").json()["latency_sample_count"] == baseline + 1
+
+
+@pytest.mark.parametrize(("samples", "average", "count"), [
+    ([10, None], 10, 1), ([None], None, 0), ([], None, 0), ([0, None], 0, 1),
+])
+def test_summary_latency_denominator(samples, average, count, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from netvision import summary
+
+    monkeypatch.setattr(summary, "db", SimpleNamespace(alerts=SimpleNamespace(count_documents=AsyncMock(return_value=0))))
+    devices = [{"latency_ms": value, "status": "online"} for value in samples]
+    result = asyncio.run(summary.summarize_devices(devices))
+    assert (result["avg_latency_ms"], result["latency_sample_count"]) == (average, count)
+
+
 # ---- #11: notifications never block ingestion ---- #
 def test_slow_notifier_does_not_block_ingest(live, monkeypatch):
     calls = []

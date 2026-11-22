@@ -33,29 +33,36 @@ async def _cascade_delete_devices(ids: List[str]) -> int:
 
 async def _wipe_device_data():
     """Remove all devices and all device-derived data (simulation mode only)."""
+    await db.discovery_candidates.delete_many({})
     await db.devices.delete_many({})
     await db.links.delete_many({})
     for coll, _ in _DEVICE_REF_COLLECTIONS:
         await db[coll].delete_many({})
 
 
-async def _ip_taken(ip: str, exclude_id: Optional[str] = None) -> bool:
+def site_query(site_id: str) -> dict:
+    # Documents created before site support belong to the default site.
+    return {"site_id": {"$in": [None, "default"]} if site_id == "default" else site_id}
+
+
+async def _ip_taken(ip: str, exclude_id: Optional[str] = None, site_id: str = "default") -> bool:
     if not ip or _is_placeholder(ip):
         return False
-    q: dict = {"ip": ip}
+    q: dict = {"ip": ip, **site_query(site_id)}
     if exclude_id:
         q["id"] = {"$ne": exclude_id}
     return await db.devices.find_one(q, {"_id": 0, "id": 1}) is not None
 
 
-async def _find_device(did=None, ip=None, name=None):
+async def _find_device(did=None, ip=None, name=None, site_id=None):
     """Resolve a device by id, then ip, then name.
 
     A name shared by several devices is ambiguous and resolves to nothing
     (issue #14): attaching data to the wrong device is worse than reporting
     it as unmatched to the collector."""
+    scope = site_query(site_id) if site_id else {}
     if did:
-        d = await db.devices.find_one({"id": did}, {"_id": 0})
+        d = await db.devices.find_one({"id": did, **scope}, {"_id": 0})
         if d:
             return d
     if ip and not _is_placeholder(ip):
@@ -63,11 +70,11 @@ async def _find_device(did=None, ip=None, name=None):
         candidates = [ip, ip.strip()]
         if _valid_ip(ip):
             candidates.insert(0, _normalize_ip(ip))
-        d = await db.devices.find_one({"ip": {"$in": list(dict.fromkeys(candidates))}}, {"_id": 0})
-        if d:
-            return d
+        matches = await db.devices.find({"ip": {"$in": list(dict.fromkeys(candidates))}, **scope}, {"_id": 0}).to_list(2)
+        if matches:
+            return matches[0] if len(matches) == 1 else None
     if name:
-        matches = await db.devices.find({"name": name}, {"_id": 0}).to_list(2)
+        matches = await db.devices.find({"name": name, **scope}, {"_id": 0}).to_list(2)
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
@@ -106,21 +113,25 @@ def _cache_add(cache: dict, d: dict):
         return
     cache["by_id"][d["id"]] = d
     if d.get("ip"):
-        cache["by_ip"].setdefault(d["ip"], d)
+        cache["by_ip"].setdefault(d["ip"], []).append(d)
     cache["by_name"].setdefault(d.get("name"), []).append(d)
 
 
-def _resolve_cached(cache: dict, did=None, ip=None, name=None) -> Optional[dict]:
+def _resolve_cached(cache: dict, did=None, ip=None, name=None, site_id=None) -> Optional[dict]:
     """Same rules as _find_device (id, normalized/raw ip, unique name), in memory."""
-    if did and did in cache["by_id"]:
+    def in_scope(doc):
+        return not site_id or doc.get("site_id", "default") == site_id
+
+    if did and did in cache["by_id"] and in_scope(cache["by_id"][did]):
         return cache["by_id"][did]
     if ip and not _is_placeholder(ip):
         candidates = ([_normalize_ip(ip)] if _valid_ip(ip) else []) + [ip, ip.strip()]
         for c in candidates:
             if c in cache["by_ip"]:
-                return cache["by_ip"][c]
+                matches = [d for d in cache["by_ip"][c] if in_scope(d)]
+                return matches[0] if len(matches) == 1 else None
     if name:
-        matches = cache["by_name"].get(name, [])
+        matches = [d for d in cache["by_name"].get(name, []) if in_scope(d)]
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
@@ -134,14 +145,14 @@ async def _normalize_stored_ips() -> int:
     compare like with like. Skips a device when the canonical IP is already used
     by another device (logged) and leaves invalid IPs (e.g. hostnames) untouched."""
     fixed = 0
-    async for d in db.devices.find({}, {"_id": 0, "id": 1, "ip": 1}):
+    async for d in db.devices.find({}, {"_id": 0, "id": 1, "ip": 1, "site_id": 1}):
         raw = d.get("ip") or ""
         if not _valid_ip(raw):
             continue
         canon = _normalize_ip(raw)
         if canon == raw:
             continue
-        if not _is_placeholder(canon) and await _ip_taken(canon, exclude_id=d["id"]):
+        if not _is_placeholder(canon) and await _ip_taken(canon, exclude_id=d["id"], site_id=d.get("site_id", "default")):
             logging.warning("device %s: IP %r not normalized, %s is used by another device", d["id"], raw, canon)
             continue
         await db.devices.update_one({"id": d["id"]}, {"$set": {"ip": canon}})

@@ -8,9 +8,10 @@ from fastapi import APIRouter
 from netvision import config, ws
 from netvision.alerts import _create_alert, _resolve_device_alerts
 from netvision.database import _apply_updates, db
-from netvision.devices import _cache_add, _find_device, _prefetch_devices, _resolve_cached
-from netvision.helpers import _normalize_ip, _normalize_ts, _utc_now_iso, _valid_ip
-from netvision.models import (AlertSeverity, AssetsPayload, Device, FdbPayload, IngestPayload,
+from netvision.devices import _find_device, _prefetch_devices, _resolve_cached
+from netvision.discovery_queue import queue_address
+from netvision.helpers import _normalize_ts, _utc_now_iso
+from netvision.models import (AlertSeverity, AssetsPayload, FdbPayload, IngestPayload,
                               InterfacesPayload, MetricSample, MetricsPayload)
 from netvision.monitoring import COLLECTOR_ALERT_ID, _derive_status, _metric_doc, _recover_if_stale, _worsen_message
 
@@ -22,7 +23,7 @@ router = APIRouter()
 
 @router.post("/interfaces")
 async def ingest_interfaces(payload: InterfacesPayload):
-    dev = await _find_device(payload.device_id, payload.ip, payload.name)
+    dev = await _find_device(payload.device_id, payload.ip, payload.name, payload.site_id)
     if not dev:
         return {"matched": False, "ip": payload.ip}
     now = datetime.now(timezone.utc)
@@ -90,7 +91,7 @@ async def device_interfaces(device_id: str):
 @router.post("/fdb")
 async def ingest_fdb(payload: FdbPayload):
     """Store the forwarding database (port -> MAC list) for a switch."""
-    dev = await _find_device(payload.device_id, payload.ip, payload.name)
+    dev = await _find_device(payload.device_id, payload.ip, payload.name, payload.site_id)
     if not dev:
         return {"matched": False, "ip": payload.ip}
     ports: dict = {}
@@ -115,7 +116,7 @@ async def ingest_assets(payload: AssetsPayload):
     upserts = 0
     unresolved = []
     for a in payload.assets:
-        parent = await _find_device(a.parent_device_id, a.parent_ip, a.parent_name)
+        parent = await _find_device(a.parent_device_id, a.parent_ip, a.parent_name, a.site_id)
         if not parent:
             unresolved.append(a.name)
             continue
@@ -158,7 +159,7 @@ async def ingest_metrics(payload: MetricsPayload):
     touched = set()
     now = datetime.now(timezone.utc).isoformat()
     for s in payload.samples:
-        dev = await _find_device(s.device_id, s.ip, s.name)
+        dev = await _find_device(s.device_id, s.ip, s.name, s.site_id)
         if not dev:
             unmatched.append(s.device_id or s.ip or s.name or s.metric_name)
             continue
@@ -207,7 +208,7 @@ async def device_series(device_id: str, metric: str, hours: int = 24):
 # ---------------- INGESTION (live data from external collectors) ---------------- #
 
 async def _resolve_device(s: MetricSample) -> Optional[dict]:
-    return await _find_device(s.device_id, s.ip, s.name)
+    return await _find_device(s.device_id, s.ip, s.name, s.site_id)
 
 
 @router.post("/ingest")
@@ -215,12 +216,11 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
     """Accept real metrics from external collectors and run them through the
     SAME judgment -> alert -> history -> WebSocket pipeline the simulator uses.
 
-    - auto_create=true  : if a sample's device is not found, create a minimal
-                          device (type=switch, vendor/model=Unknown) so it shows up.
+    - auto_create=true  : queue unknown IPv4 addresses for approval.
     - auto_create=false : unmatched samples are skipped and reported back.
     """
     updated = 0
-    created = 0
+    queued = 0
     unmatched: List[str] = []
     metric_docs: List[dict] = []
     device_ops: List[tuple] = []
@@ -228,33 +228,18 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
     cache = await _prefetch_devices(payload.samples)  # one query for the whole batch (issue #16)
 
     for s in payload.samples:
-        device = _resolve_cached(cache, s.device_id, s.ip, s.name)
-
-        # auto-create a minimal device if requested and not found
-        # never auto-create when the name already exists: a None here then means the
-        # name is AMBIGUOUS, and creating yet another twin would grow forever
-        if (device is None and auto_create and (s.ip or s.name) and (not s.ip or _valid_ip(s.ip))
-                and not (s.name and s.name in cache["by_name"])):
-            dev = Device(
-                name=s.name or s.ip or "device",
-                ip=_normalize_ip(s.ip) if s.ip else "0.0.0.0",
-                vendor="Unknown",
-                model="Unknown",
-                protocol="ICMP",
-                device_type="switch",
-            )
-            await db.devices.insert_one(dev.model_dump())
-            device = dev.model_dump()
-            _cache_add(cache, device)
-            created += 1
+        device = _resolve_cached(cache, s.device_id, s.ip, s.name, s.site_id)
 
         if device is None:
+            if auto_create and s.ip and (s.site_id or s.ip.strip() not in cache["by_ip"]):
+                if await queue_address(s.site_id or "default", s.ip):
+                    queued += 1
             unmatched.append(s.device_id or s.ip or s.name or "unknown")
             continue
 
         prev_status = device["status"]
         # merge metrics: provided values win, omitted keep previous
-        latency = float(s.latency_ms) if s.latency_ms is not None else float(device.get("latency_ms", 0.0))
+        latency = s.latency_ms if s.latency_ms is not None else device.get("latency_ms")
         ploss = float(s.packet_loss) if s.packet_loss is not None else float(device.get("packet_loss", 0.0))
         cpu = float(s.cpu_pct) if s.cpu_pct is not None else float(device.get("cpu_pct", 0.0))
         uptime = float(s.uptime_pct) if s.uptime_pct is not None else float(device.get("uptime_pct", 100.0))
@@ -278,7 +263,6 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
         now_iso = _utc_now_iso()
         sample_ts = _normalize_ts(s.ts)
         fields = {
-            "latency_ms": round(latency, 2),
             "packet_loss": round(ploss, 2),
             "cpu_pct": round(cpu, 1),
             "uptime_pct": round(uptime, 2),
@@ -286,6 +270,8 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
             "status": new_status,
             "stale": False,
         }
+        if s.latency_ms is not None:
+            fields["latency_ms"] = round(s.latency_ms, 2)
         device_ops.append(({"id": device["id"]}, {"$set": fields}))
         snapshot_for_alert = dict(device)
         device.update(fields)  # later samples in the same batch see the new state
@@ -300,7 +286,7 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
         if prev_status != "online" and new_status == "online":
             followups.append(("resolve", device["id"]))
 
-        metric_docs.append(_metric_doc(device["id"], sample_ts, latency, ploss, cpu, new_status))
+        metric_docs.append(_metric_doc(device["id"], sample_ts, s.latency_ms, ploss, cpu, new_status))
         updated += 1
 
     await _apply_updates(db.devices, device_ops, ordered=True)
@@ -322,7 +308,7 @@ async def ingest(payload: IngestPayload, auto_create: bool = False):
     return {
         "received": len(payload.samples),
         "updated": updated,
-        "created": created,
+        "created": 0, "queued": queued,
         "unmatched": unmatched,
         "simulation_mode": config.sim_on(),
     }

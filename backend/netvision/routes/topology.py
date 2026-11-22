@@ -78,6 +78,7 @@ async def topology():
             "label": d["name"],
             "type": d["device_type"],
             "status": d["status"],
+            "stale": d.get("stale", False),
             "ip": d["ip"],
             "vendor": d["vendor"],
             "model": d["model"],

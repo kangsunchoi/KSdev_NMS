@@ -1,4 +1,6 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { deviceIcons, DeviceIcon } from "../components/DeviceIcon";
 import CytoscapeComponent from "react-cytoscapejs";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, Crosshair, Minus, Plus, X } from "lucide-react";
@@ -11,9 +13,6 @@ const RED = "#c73437";
 const BLUE = "#205ec3";
 const COLOR = { online: BLACK, warning: ORANGE, offline: RED, critical: RED };
 const INK = {
-  server: '<rect x="9" y="2" width="22" height="28" rx="2"/><path d="M13 9h14m-14 5h14m-14 9h3"/>',
-  router: '<ellipse cx="20" cy="16" rx="17" ry="10"/><path d="M10 16h20m-5-4 5 4-5 4m-10-8-5 4 5 4"/>',
-  switch: '<rect x="3" y="10" width="34" height="13" rx="2"/><path d="M8 15h3m3 0h3m3 0h3m3 0h3m3 0h1M8 19h9"/>',
   plc: '<rect x="5" y="5" width="30" height="22" rx="2"/><path d="M12 5v22m7-22v22m7-22v22M8 10v4"/>',
   hmi: '<rect x="4" y="4" width="32" height="21" rx="2"/><path d="M20 25v4m-7 0h14"/>',
   sensor: '<rect x="10" y="5" width="20" height="22" rx="3"/><path d="M14 16h3l2-5 3 10 2-5h2"/>',
@@ -32,7 +31,7 @@ function makeGraph(data, showIp) {
   if (!data) return [];
   const nodes = data.nodes.map(({ data: node }) => {
     if (node.is_zone) return { data: node };
-    return { data: { ...node, icon: ICONS[node.type] || ICONS.asset,
+    return { data: { ...node, icon: deviceIcons[node.type] || ICONS[node.type] || ICONS.asset,
       caption: showIp && node.ip ? node.label + "\n" + node.ip : node.label,
     }};
   });
@@ -65,7 +64,7 @@ function graphStyles(linkStyle) {
       "text-background-color": "white", "text-background-opacity": 1, "text-background-padding": 2,
       "min-zoomed-font-size": 7,
     }},
-    { selector: "node:selected", style: { "border-color": BLUE, "border-width": 2, "overlay-color": BLUE, "overlay-opacity": .06, "overlay-padding": 4 } },
+    { selector: "node:selected", style: { "outline-color": BLUE, "outline-width": 2, "outline-offset": 3 } },
     { selector: "edge:selected", style: { width: 3, "line-color": BLUE } },
   ];
 }
@@ -77,6 +76,9 @@ export default function Topology() {
   const events = useQuery({ queryKey: ["alerts"], queryFn: fetchAlerts, refetchInterval: 10000 });
   const zoneStats = useQuery({ queryKey: ["zones"], queryFn: () => api.get("/zones").then(r => r.data), refetchInterval: 10000 });
   const data = topology.data;
+  const [params] = useSearchParams();
+  const requestedDevice = params.get("device");
+  const openedDevice = useRef(null);
   const [selectedId, setSelectedId] = useState(null);
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [showIp, setShowIp] = useState(false);
@@ -140,6 +142,17 @@ export default function Topology() {
     });
   }, [cy, elements, collapsed]);
 
+  useEffect(() => {
+    if (!requestedDevice || !cy || cy.destroyed() || !data || openedDevice.current === requestedDevice) return;
+    const node = cy.getElementById(requestedDevice);
+    if (!node.length) return;
+    cy.elements(":selected").unselect();
+    node.select();
+    cy.center(node);
+    openedDevice.current = requestedDevice;
+    setSelectedId(requestedDevice);
+  }, [requestedDevice, cy, data]);
+
   function closeSelection() {
     cy?.elements(":selected").unselect();
     setSelectedId(null);
@@ -171,7 +184,7 @@ export default function Topology() {
     [t("topo.type"), selected.asset_type], [t("topo.detail"), selected.detail],
   ] : [
     [t("topo.type"), selected.type], [t("topo.ip"), selected.ip], [t("topo.zone"), selected.zone],
-    [t("topo.vendor"), selected.vendor], [t("topo.model"), selected.model], [t("topo.protocol"), selected.protocol], [t("topo.status"), selected.status],
+    [t("topo.vendor"), selected.vendor], [t("topo.model"), selected.model], [t("topo.protocol"), selected.protocol], [t("topo.status"), selected.stale ? (ko ? "수집 지연" : "Telemetry stale") : selected.status],
   ]);
   return (
     <main className="flex min-w-0 flex-col p-4 md:p-6 gap-3 text-slate-900" data-testid="topology-page">
@@ -211,7 +224,8 @@ export default function Topology() {
             {selected && <section className="border-b border-slate-300 p-4" data-testid="topology-side-panel">
               <div className="flex justify-between gap-2"><h2 className="font-semibold">{selected.source != null ? (ko ? "연결 상세" : "Link details") : t("topo.nodeDetails")}</h2>
               <button type="button" onClick={closeSelection} aria-label={ko ? "닫기" : "Close"} data-testid="topology-close-panel"><X size={16}/></button></div>
-              {selected.source == null && <div className="mt-3 font-semibold break-all">{selected.label}</div>}
+              {selected.source == null && <div className="mt-3 font-semibold break-all"><DeviceIcon type={selected.type}/>{selected.label}</div>}
+              {selected.source == null && !selected.is_asset && !selected.is_segment && <Link className="mt-2 inline-block text-xs text-blue-700 underline" to={"/devices?device=" + encodeURIComponent(selected.id)}>{ko ? "장비 목록에서 보기" : "View in inventory"}</Link>}
               <dl className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
                 {fieldRows.map(([name,value]) => <React.Fragment key={name}><dt className="text-slate-600">{name}</dt><dd className="break-words">{value ?? "—"}</dd></React.Fragment>)}
               </dl>

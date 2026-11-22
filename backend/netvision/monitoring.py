@@ -8,7 +8,7 @@ from netvision.database import db
 from netvision.helpers import _parse_ts, _utc_now_iso
 
 
-def _derive_status(prev_status: str, candidate: str, latency: float, ploss: float) -> str:
+def _derive_status(prev_status: str, candidate: str, latency: float | None, ploss: float) -> str:
     """Deterministic status derivation from metrics.
 
     Extracted verbatim from the original simulation loop so that BOTH the
@@ -18,31 +18,32 @@ def _derive_status(prev_status: str, candidate: str, latency: float, ploss: floa
     """
     new_status = candidate
     if prev_status != "offline":
-        if ploss > 8 or latency > 80:
+        if ploss > 8 or (latency is not None and latency > 80):
             new_status = "critical"
-        elif ploss > 4 or latency > 45:
+        elif ploss > 4 or (latency is not None and latency > 45):
             new_status = "warning"
-        elif ploss < 1.5 and latency < 25:
+        elif ploss < 1.5 and latency is not None and latency < 25:
             new_status = "online"
     return new_status
 
 
-def _worsen_message(name: str, new_status: str, latency: float, ploss: float) -> str:
+def _worsen_message(name: str, new_status: str, latency: float | None, ploss: float) -> str:
     """Alert text for a worsening transition (same wording as the simulator)."""
+    detail = f"latency {latency:.1f}ms" if latency is not None else f"packet loss {ploss:.1f}%"
     return {
-        "warning": f"{name}: degraded performance (latency {round(latency, 1)}ms)",
+        "warning": f"{name}: degraded performance ({detail})",
         "critical": f"{name}: critical state (packet loss {round(ploss, 1)}%)",
         "offline": f"{name}: lost contact",
     }.get(new_status, "Anomaly")
 
 
-def _metric_doc(device_id: str, ts_iso: str, latency: float, ploss: float, cpu: float, status: str) -> dict:
+def _metric_doc(device_id: str, ts_iso: str, latency: float | None, ploss: float, cpu: float, status: str) -> dict:
     """Build one time-series history point (same shape used by the simulator)."""
     return {
         "device_id": device_id,
         "ts": ts_iso,
         "ts_dt": datetime.now(timezone.utc),  # for TTL index
-        "latency_ms": round(latency, 2),
+        "latency_ms": round(latency, 2) if latency is not None else None,
         "packet_loss": round(ploss, 2),
         "cpu_pct": round(cpu, 1),
         "status": status,

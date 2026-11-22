@@ -12,12 +12,12 @@ const HOURS = [1, 6, 12, 24];
 // Fixed network metrics (served by /devices/{id}/metrics).
 const NETWORK_KEYS = ["latency_ms", "packet_loss", "cpu_pct"];
 const NETWORK_META = {
-  latency_ms: { color: "#16c79a", label: "Latency (ms)", suffix: "ms", short: "Latency" },
-  packet_loss: { color: "#f4d03f", label: "Packet Loss (%)", suffix: "%", short: "Pkt Loss" },
+  latency_ms: { color: "#09654b", label: "Latency (ms)", suffix: "ms", short: "Latency" },
+  packet_loss: { color: "#875100", label: "Packet Loss (%)", suffix: "%", short: "Pkt Loss" },
   cpu_pct: { color: "#a78bfa", label: "CPU (%)", suffix: "%", short: "CPU" },
 };
 // Palette reused for arbitrary named (generic/PLC) metrics.
-const GENERIC_COLORS = ["#16c79a", "#60a5fa", "#f472b6", "#fbbf24", "#34d399", "#c084fc", "#fb923c"];
+const GENERIC_COLORS = ["#09654b", "#23518a", "#f472b6", "#fbbf24", "#34d399", "#c084fc", "#fb923c"];
 
 const fmtTime = (ts) =>
   new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -97,7 +97,7 @@ export const MetricChartModal = ({ device, onClose }) => {
               {device.name} <span className="text-nv-muted">/ {device.ip}</span>
             </div>
           </div>
-          <button onClick={onClose} className="text-nv-muted hover:text-white" data-testid="metric-chart-close">
+          <button onClick={onClose} className="text-nv-muted hover:text-nv-text" data-testid="metric-chart-close">
             <X size={16} />
           </button>
         </div>
@@ -183,32 +183,32 @@ export const MetricChartModal = ({ device, onClose }) => {
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={points} margin={{ top: 8, right: 20, left: 0, bottom: 0 }}>
-                <CartesianGrid stroke="#2a3b55" strokeDasharray="2 4" />
+                <CartesianGrid stroke="#d3d8dd" strokeDasharray="2 4" />
                 <XAxis
                   dataKey="label"
-                  tick={{ fill: "#94a3b8", fontSize: 10, fontFamily: "JetBrains Mono" }}
-                  axisLine={{ stroke: "#2a3b55" }}
+                  tick={{ fill: "#53606b", fontSize: 10, fontFamily: "JetBrains Mono" }}
+                  axisLine={{ stroke: "#d3d8dd" }}
                   tickLine={false}
                   minTickGap={32}
                 />
                 <YAxis
-                  tick={{ fill: "#94a3b8", fontSize: 10, fontFamily: "JetBrains Mono" }}
-                  axisLine={{ stroke: "#2a3b55" }}
+                  tick={{ fill: "#53606b", fontSize: 10, fontFamily: "JetBrains Mono" }}
+                  axisLine={{ stroke: "#d3d8dd" }}
                   tickLine={false}
                   width={40}
                 />
                 <Tooltip
                   contentStyle={{
-                    background: "#16213e",
-                    border: "1px solid #2a3b55",
+                    background: "#ffffff",
+                    border: "1px solid #d3d8dd",
                     borderRadius: 3,
                     fontFamily: "JetBrains Mono, monospace",
                     fontSize: 11,
                   }}
-                  labelStyle={{ color: "#94a3b8" }}
+                  labelStyle={{ color: "#53606b" }}
                   formatter={(v) => [`${v}${meta.suffix}`, meta.label]}
                 />
-                <Legend wrapperStyle={{ fontSize: 11, fontFamily: "Inter", color: "#94a3b8" }} />
+                <Legend wrapperStyle={{ fontSize: 11, fontFamily: "Inter", color: "#53606b" }} />
                 <Line
                   type="monotone"
                   dataKey={valueKey}
@@ -221,8 +221,8 @@ export const MetricChartModal = ({ device, onClose }) => {
                 <Brush
                   dataKey="label"
                   height={22}
-                  stroke="#2a3b55"
-                  fill="#1a1a2e"
+                  stroke="#d3d8dd"
+                  fill="#f7f8fa"
                   travellerWidth={8}
                   tickFormatter={() => ""}
                 />

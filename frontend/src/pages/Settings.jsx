@@ -60,15 +60,15 @@ export default function Settings() {
       </div>
 
       {!authEnabled && (
-        <div className="nv-panel px-4 py-3 text-[12px] text-nv-muted font-mono border-l-2 border-[#f4d03f]">
-          {t("set.authOffPre")}<span className="text-[#16c79a]">AUTH_ENABLED=true</span>{t("set.authOffPost")}
+        <div className="nv-panel px-4 py-3 text-[12px] text-nv-muted font-mono border-l-2 border-[#875100]">
+          {t("set.authOffPre")}<span className="text-[#09654b]">AUTH_ENABLED=true</span>{t("set.authOffPost")}
         </div>
       )}
 
       {/* Users */}
       <div className="nv-panel">
         <div className="px-4 py-2 border-b border-nv-border flex items-center gap-2">
-          <UsersIcon size={14} className="text-[#16c79a]" />
+          <UsersIcon size={14} className="text-[#09654b]" />
           <span className="nv-section-title">{t("set.usersRbac")}</span>
         </div>
 
@@ -120,7 +120,7 @@ export default function Settings() {
                       </select>
                     </td>
                     <td>
-                      <button className="text-nv-muted hover:text-[#e74c3c] px-1"
+                      <button className="text-nv-muted hover:text-[#ae2832] px-1"
                         onClick={() => { if (window.confirm(t("set.confirmDelete").replace("{user}", u.username))) mDelete.mutate(u.username); }}
                         data-testid={`settings-delete-${u.username}`} title={t("common.delete")}>
                         <Trash2 size={14} />
@@ -145,7 +145,7 @@ export default function Settings() {
       {/* Audit log */}
       <div className="nv-panel">
         <div className="px-4 py-2 border-b border-nv-border flex items-center gap-2">
-          <ScrollText size={14} className="text-[#16c79a]" />
+          <ScrollText size={14} className="text-[#09654b]" />
           <span className="nv-section-title">{t("set.auditLog")}</span>
           <span className="ml-auto text-[10px] text-nv-muted font-mono">{audit.length} {t("set.entries")}</span>
         </div>
@@ -167,7 +167,7 @@ export default function Settings() {
                   <td className="font-mono text-[12px] text-nv-text">{r.username} <span className="text-nv-muted">/{r.role}</span></td>
                   <td className="font-mono text-[11px]">{r.method}</td>
                   <td className="font-mono text-[11px] text-nv-text">{r.path}</td>
-                  <td className="font-mono text-[11px] text-[#16c79a]">{r.status}</td>
+                  <td className="font-mono text-[11px] text-[#09654b]">{r.status}</td>
                 </tr>
               ))}
               {audit.length === 0 && (

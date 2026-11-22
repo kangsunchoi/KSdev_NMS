@@ -30,11 +30,11 @@ export const Login = ({ onSuccess }) => {
     <div className="min-h-screen bg-nv-bg text-nv-text flex items-center justify-center p-4">
       <div className="nv-panel w-[380px] max-w-full" data-testid="login-panel">
         <div className="px-5 py-4 border-b border-nv-border flex items-center gap-2">
-          <div className="w-7 h-7 flex items-center justify-center bg-[#16c79a] text-[#0b1220] rounded-sm">
+          <div className="w-7 h-7 flex items-center justify-center bg-[#09654b] text-[#ffffff] rounded-sm">
             <Activity size={16} strokeWidth={2.5} />
           </div>
           <div className="leading-tight">
-            <div className="text-[14px] font-semibold tracking-wide text-white">NetVision</div>
+            <div className="text-[14px] font-semibold tracking-wide text-nv-text">Aegis OT NMS</div>
             <div className="text-[10px] font-mono tracking-[0.18em] text-nv-muted">{t("brand.tagline")}</div>
           </div>
         </div>
@@ -59,7 +59,7 @@ export const Login = ({ onSuccess }) => {
           </div>
 
           {error ? (
-            <div className="text-[12px] text-[#e74c3c] font-mono" data-testid="login-error">{error}</div>
+            <div className="text-[12px] text-[#ae2832] font-mono" data-testid="login-error">{error}</div>
           ) : null}
 
           <button className="nv-btn nv-btn-primary w-full mt-1" onClick={submit}

@@ -88,7 +88,7 @@ function App() {
     content = (
       <div className="min-h-screen bg-nv-bg text-nv-muted flex flex-col items-center justify-center gap-3 font-mono text-[12px]"
         role="alert" data-testid="auth-config-error">
-        <div>Cannot reach the NetVision server. Retrying every 10 seconds.</div>
+        <div>Cannot reach the Aegis OT NMS server. Retrying every 10 seconds.</div>
         <button className="nv-btn" onClick={() => setAttempt((n) => n + 1)} data-testid="auth-config-retry">
           Retry now
         </button>

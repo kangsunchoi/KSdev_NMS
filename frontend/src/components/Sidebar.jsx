@@ -29,19 +29,19 @@ export const Sidebar = () => {
   const { t, lang, setLang } = useI18n();
   return (
     <aside
-      className={`fixed top-0 left-0 h-full border-r border-nv-border bg-[#131a30] flex flex-col transition-[width] duration-150 ${
+      className={`nv-sidebar sticky top-0 h-screen shrink-0 border-r border-nv-border bg-white flex flex-col transition-[width] duration-150 ${
         collapsed ? "w-[64px]" : "w-[220px]"
       }`}
       data-testid="sidebar"
     >
       {/* Brand */}
       <div className="flex items-center gap-2 px-4 h-[56px] border-b border-nv-border">
-        <div className="w-7 h-7 flex items-center justify-center bg-[#16c79a] text-[#0b1220] rounded-sm">
+        <div className="w-7 h-7 flex items-center justify-center bg-nv-text text-[#ffffff] rounded-sm">
           <Activity size={16} strokeWidth={2.5} />
         </div>
         {!collapsed && (
           <div className="leading-tight">
-            <div className="text-[13px] font-semibold tracking-wide text-white">NetVision</div>
+            <div className="text-[13px] font-semibold tracking-wide text-nv-text">Aegis OT NMS</div>
             <div className="text-[10px] font-mono tracking-[0.18em] text-nv-muted">{t("brand.tagline")}</div>
           </div>
         )}
@@ -50,7 +50,7 @@ export const Sidebar = () => {
       <nav className="flex-1 py-2">
         {NAV.map(({ to, labelKey, icon: Icon, testId }) => (
           <NavLink
-            key={to}
+            aria-label={t(labelKey)} title={t(labelKey)} key={to}
             to={to}
             end={to === "/"}
             data-testid={testId}
@@ -68,7 +68,7 @@ export const Sidebar = () => {
           <button
             type="button"
             onClick={() => setLang("ko")}
-            className={`text-[11px] font-mono px-1.5 py-0.5 rounded-sm ${lang === "ko" ? "text-[#16c79a] border border-[#16c79a]" : "text-nv-muted hover:text-nv-text"}`}
+            className={`text-[11px] font-mono px-1.5 py-0.5 rounded-sm ${lang === "ko" ? "text-[#09654b] border border-[#09654b]" : "text-nv-muted hover:text-nv-text"}`}
             data-testid="lang-ko"
           >
             KO
@@ -76,7 +76,7 @@ export const Sidebar = () => {
           <button
             type="button"
             onClick={() => setLang("en")}
-            className={`text-[11px] font-mono px-1.5 py-0.5 rounded-sm ${lang === "en" ? "text-[#16c79a] border border-[#16c79a]" : "text-nv-muted hover:text-nv-text"}`}
+            className={`text-[11px] font-mono px-1.5 py-0.5 rounded-sm ${lang === "en" ? "text-[#09654b] border border-[#09654b]" : "text-nv-muted hover:text-nv-text"}`}
             data-testid="lang-en"
           >
             EN
@@ -95,7 +95,7 @@ export const Sidebar = () => {
           <button
             type="button"
             onClick={() => { clearSession(); window.location.reload(); }}
-            className="flex items-center gap-2 text-nv-muted hover:text-[#e74c3c] transition-colors text-[12px]"
+            className="flex items-center gap-2 text-nv-muted hover:text-[#ae2832] transition-colors text-[12px]"
             data-testid="logout-btn"
             title={t("common.signOut")}
           >
@@ -108,8 +108,8 @@ export const Sidebar = () => {
       <button
         type="button"
         onClick={() => setCollapsed((c) => !c)}
-        className="flex items-center justify-center h-10 border-t border-nv-border text-nv-muted hover:text-[#16c79a] transition-colors"
-        data-testid="sidebar-toggle-btn"
+        className="flex items-center justify-center h-10 border-t border-nv-border text-nv-muted hover:text-[#09654b] transition-colors"
+        aria-expanded={!collapsed} aria-label={collapsed ? (lang === "ko" ? "?? ???" : "Expand navigation") : t("common.collapse")} data-testid="sidebar-toggle-btn"
       >
         {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
         {!collapsed && <span className="ml-2 text-[11px] uppercase tracking-wider">{t("common.collapse")}</span>}

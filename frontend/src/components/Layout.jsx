@@ -6,19 +6,19 @@ import useLiveData from "../hooks/useLiveData";
 export const Layout = ({ children }) => {
   useLiveData();
   return (
-    <div className="min-h-screen bg-nv-bg text-nv-text">
+    <div className="nv-shell flex min-h-screen bg-nv-bg text-nv-text">
       <Sidebar />
-      <main className="ml-[220px] min-h-screen" data-testid="app-main">
+      <main className="nv-main min-w-0 flex-1 min-h-screen" data-testid="app-main">
         {children}
       </main>
       <Toaster
         position="bottom-right"
-        theme="dark"
+        theme="light"
         toastOptions={{
           style: {
-            background: "#16213e",
-            border: "1px solid #2a3b55",
-            color: "#f8f9fa",
+            background: "#ffffff",
+            border: "1px solid #d3d8dd",
+            color: "#181c20",
             borderRadius: "3px",
             fontFamily: "Inter, sans-serif",
           },
